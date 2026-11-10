@@ -1,6 +1,6 @@
 {
-  "version": 36,
-  "base_publication_commit": "bca6a588b3f12ae1e3a0f68816240aa9c2d4cf95",
+  "version": 37,
+  "base_publication_commit": "99481906616b0637f627639bfbe44b4b329a91fd",
   "hosting": "GitHub Pages",
-  "change": "PRJ 等字节 ASCII 标注回存：预览、独立下载与混合修改拦截"
+  "change": "PRJ 独立直线单端点回存：定位、坐标预览、守护检查与独立下载"
 }

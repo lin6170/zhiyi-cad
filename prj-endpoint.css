@@ -1,0 +1,9 @@
+#prj-endpoint-tools{margin-top:10px}
+#prj-endpoint-tools button,#prj-endpoint-line{width:100%;margin-top:6px}
+#prj-endpoint-dialog{width:760px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;border:1px solid #d7e1d5;border-radius:12px;padding:24px;color:#344c43}
+#prj-endpoint-dialog::backdrop{background:#162f2859}
+#prj-endpoint-dialog h2{font-size:18px;margin:0 0 14px}
+#prj-endpoint-dialog p{line-height:1.7;overflow-wrap:anywhere}
+#prj-endpoint-dialog table{width:100%;table-layout:fixed;border-collapse:collapse;margin:14px 0}
+#prj-endpoint-dialog th,#prj-endpoint-dialog td{padding:8px;text-align:left;border-bottom:1px solid #e1e6dd;overflow-wrap:anywhere;white-space:pre-wrap}
+#prj-endpoint-message{font-weight:600}
