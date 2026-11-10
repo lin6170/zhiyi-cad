@@ -1,4 +1,5 @@
 import {textCorners,textWidth} from './geometry.mjs';
+import {replaceAnnotationText} from './annotation-text.mjs';
 
 const clone=value=>JSON.parse(JSON.stringify(value));
 const snapshot=project=>JSON.stringify(project.entities);
@@ -151,11 +152,7 @@ export function editTableTexts(project,table,changes){
   for(const entity of next.entities){
     if(!updates.has(entity.id)||entity.text===updates.get(entity.id))continue;
     if(entity.type!=='text')throw new Error('表格引用的文字已失效。');
-    const value=updates.get(entity.id),reference=entity.text||(typeof entity.emptyTextReference==='string'&&entity.emptyTextReference.length<=10000?entity.emptyTextReference:''),oldWidth=textWidth(reference,entity.height),newWidth=textWidth(value,entity.height);
-    if(newWidth>0){entity.width=oldWidth>0?(entity.width||oldWidth)*newWidth/oldWidth:newWidth;delete entity.emptyTextReference;}
-    else if(entity.text)entity.emptyTextReference=entity.text;
-    if(entity.width!==undefined&&(!Number.isFinite(entity.width)||entity.width<=0||entity.width>1e8))throw new Error('修改后的文字宽度超出可用范围。');
-    entity.text=value;entity.name=value||'空文字';if(entity.source)entity.source.modified=true;changed++;
+    if(replaceAnnotationText(entity,updates.get(entity.id)))changed++;
   }
   return {project:next,changed};
 }

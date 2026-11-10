@@ -1,6 +1,6 @@
 {
-  "version": 35,
-  "base_source_commit": "ad40d9a60a8dc3a56d0da9fbf0da1315d735971f",
+  "version": 36,
+  "base_publication_commit": "bca6a588b3f12ae1e3a0f68816240aa9c2d4cf95",
   "hosting": "GitHub Pages",
-  "change": "出图预览默认显示纸样并区分校准页"
+  "change": "PRJ 等字节 ASCII 标注回存：预览、独立下载与混合修改拦截"
 }

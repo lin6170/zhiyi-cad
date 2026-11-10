@@ -32,6 +32,9 @@ import { spreadBoundary, pickSpreadStation } from './spread.mjs';
 import { createDxfSettings } from './dxf-ui.mjs';
 import { decodeDxfBytes } from './dxf.mjs';
 import { createTableTextEditor } from './table-ui.mjs';
+import { replaceAnnotationText } from './annotation-text.mjs';
+import { createPrjTextExportSession } from './prj-text-export.mjs';
+import { createPrjWritebackPanel } from './prj-writeback-ui.mjs';
 const $ = id => document.getElementById(id);
 const svg = $('canvas'), drawing = $('drawing'), overlay = $('overlay');
 const ns = 'http://www.w3.org/2000/svg';
@@ -41,6 +44,7 @@ let project = emptyProject(), selected = new Set(), tool = 'select', dirty = fal
 let camera = { x: 100, y: 500, scale: 1 }, draft = [], pointer = { x: 0, y: 0 }, gesture = null, space = false;
 let undoStack = [], redoStack = [], toastTimer;
 let importPending = false;
+let prjExportSession = null;
 let recovery=null,recoverySuspended=false,recoveryFingerprint=null,recoveryHasRecord=false,projectRevision=0;
 let snapIndex=null,snapMatch=null,snapFailure=null,lastPointerWorld=null;
 let darkCanvas = false;
@@ -50,6 +54,8 @@ let controlEntityId = null, controlIndex = 0;
 let seamPreview = null, seamChoiceKey = '', seamChoices = [];
 let seamEdgeDefs=[],seamWidthsDraft=new Map(),seamRowsKey='',seamEdgeFocus=null;
 let notchPreview=null,notchSelectionKey='',notchBaseKey='';
+const prjWritebackPanel=createPrjWritebackPanel({getProject:()=>project,getSession:()=>prjExportSession,
+  canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool),download,notify});
 function emptyProject() { return { format: 'zhiyi-cad', version: 6, name: '未命名纸样', units: 'mm', entities: [], groups: [], seamAllowances: [], notches:[], seamChecks:[], warnings: [] }; }
 const matchPanel=createSeamCheckPanel({getProject:()=>project,commit:next=>{checkpoint();project=next;finishEdit();},setTool,render,fit,notify,download});
 const gradingPanel=createGradingPanel({getProject:()=>project,getSelection:()=>selected,getTool:()=>tool,getDxfOptions:dxfSettings.options,commit:next=>{checkpoint();project=next;finishEdit();},setTool,render,fit,notify,download});
@@ -337,6 +343,7 @@ function render() {
   $('welcome').hidden = project.entities.length > 0 || draft.length > 0;
 }
 function refresh() {
+  $('prj-writeback-open').hidden=!project.metadata?.format?.startsWith('ET');
   snapIndex=null;snapMatch=null;snapFailure=null;
   syncAllowances(project,()=>crypto.randomUUID());
   syncNotches(project,()=>crypto.randomUUID());
@@ -842,12 +849,11 @@ function editSelected(callback) {
 }
 $('entity-name').onchange = () => editSelected(entity => entity.name = $('entity-name').value || '未命名图元');
 $('entity-layer').onchange = () => editSelected(entity => entity.layer = $('entity-layer').value);
-$('text-content').onchange = () => editSelected(entity => {
+$('text-content').onchange = action(() => editSelected(entity => {
   const value = $('text-content').value.trim();
   if (!value) { $('text-content').value = entity.text; return; }
-  entity.text = value; entity.name = value; entity.width = textWidth(value, entity.height);
-  if (entity.source) entity.source.modified = true;
-});
+  replaceAnnotationText(entity,value);
+}));
 $('text-height').onchange = action(() => {
   const height = number('text-height');
   if (height <= 0) throw new Error('字高必须大于零');
@@ -1038,7 +1044,8 @@ $('export').onclick=action(()=>{
   notify('已导出当前基码 DXF · '+(options.curveMode==='native'?'保留原生样条':'折线采样偏差 '+options.tolerance+' mm')+'。各尺码在放码面板导出；不含服装关联规则。');
 });
 function canReplace() { return !hasUnsavedWork() || confirm('当前工程有未保存的修改或绘图草稿。继续会替换当前画布，是否继续？'); }
-function loadProject(value) {
+function loadProject(value, sourceSession=null) {
+  prjWritebackPanel.reset();prjExportSession=sourceSession;
   const suspended=recoverySuspended;recoverySuspended=true;
   recovery?.writer.newContext();recoveryFingerprint=null;recoveryHasRecord=false;
   constructionInput.reset();
@@ -1065,6 +1072,7 @@ function loadProject(value) {
 $('new').onclick=()=>{if(canReplace())loadProject(emptyProject());};
 $('open').onclick=$('welcome-open').onclick=()=>$('file').click();
 async function openFile(file) {
+  if(prjWritebackPanel.isOpen()){notify('请先关闭 PRJ 回存预览。');return;}
   if(recovery.isOpen()){notify('请先关闭本机恢复窗口，再打开文件。');return;}
   if (tableEditor.isOpen()) { notify('请先应用或关闭表格编辑，再打开文件。'); return; }
   if (importPending) { notify('正在读取文件，请稍候'); return; }
@@ -1074,17 +1082,19 @@ async function openFile(file) {
   document.querySelector('main').inert = true;
   $('new').disabled = true;
   try {
-    let value;
+    let value,sourceSession=null;
     if(/\.prj$/i.test(file.name)){
-      const parsed=await prjImport.choose(parsePrj(await file.arrayBuffer(),file.name));
+      const sourceBytes=new Uint8Array(await file.arrayBuffer());
+      const parsed=await prjImport.choose(parsePrj(sourceBytes,file.name));
       if(!parsed){notify('已取消 PRJ 导入');return;}
       value={...emptyProject(),...parsed,units:'unknown'};
+      try{sourceSession=createPrjTextExportSession(sourceBytes,file.name);}catch{sourceSession=null;}
       darkCanvas = true; $('grid').checked = false; $('show-text').checked = true;
     } else if(/\.dxf$/i.test(file.name)){
       const decoded=decodeDxfBytes(await file.arrayBuffer());value={...emptyProject(),...fromDxf(decoded.text),name:file.name.replace(/\.dxf$/i,'')};
       value.metadata.sourceFile=file.name;value.metadata.dxfImport.encoding=decoded.encoding;
     } else value=validateProject(JSON.parse(await file.text()));
-    validateProject(value);loadProject(value);
+    validateProject(value);loadProject(value,sourceSession);
     notify('已打开 '+file.name+' · '+value.entities.length+' 个图元'+(value.warnings?.length?' · 请查看导入报告':''));
   } catch(error) { notify('导入失败：'+error.message); }
   finally { importPending = false; document.querySelector('main').inert = false; $('new').disabled = false; }
@@ -1109,6 +1119,7 @@ $('demo').onclick=()=>{
   value.warnings=['示例用于体验绘图操作，未经服装版型验证。'];loadProject(value);
 };
 window.addEventListener('keydown',event=>{
+  if(prjWritebackPanel.isOpen())return;
   if(importPending)return;
   if(recovery.isOpen())return;
   if(tableEditor.isOpen())return;
