@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>制衣 CAD · 纸样工作台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="line-edit.css"><link rel="stylesheet" href="position.css"><link rel="stylesheet" href="spread.css"><link rel="stylesheet" href="dart.css"><link rel="stylesheet" href="unfold.css"><link rel="stylesheet" href="piece-split.css"><link rel="stylesheet" href="piece-merge.css"><link rel="stylesheet" href="dxf.css"><link rel="stylesheet" href="table.css"><link rel="stylesheet" href="recovery.css"><link rel=stylesheet href=intersection-trim.css><link rel=stylesheet href=endpoint-extend.css></head>
+<body>
+<header><div class="brand"><span class="brand-icon">衣</span><div><strong>制衣 CAD</strong><small>PATTERN STUDIO</small></div></div><div class="document"><span class="dot"></span><span id="document-name">未命名纸样</span><span id="dirty"></span></div><div class="file-actions"><button id="new">新建</button><button id="open">打开文件</button><button id="save" class="primary">保存工程</button><div class="dxf-actions"><button id="export">原生 DXF</button><button id="dxf-options-button" data-dxf-settings aria-haspopup="dialog" aria-label="DXF 导出设置" title="DXF 导出设置">⌄</button></div></div></header>
+<nav class="command-bar"><div class="command-group"><button id="undo" title="Ctrl+Z">↶ 撤销</button><button id="redo" title="Ctrl+Shift+Z">↷ 重做</button></div><div class="command-group"><button id="fit">适合窗口 <kbd>F</kbd></button><button id="zoom-out">−</button><span id="zoom">100%</span><button id="zoom-in">＋</button></div><label><input type="checkbox" id="whole-group" checked> 整组选取</label><label><input type="checkbox" id="snap" checked> 吸附</label><select id="snap-mode" aria-label="吸附方式" title="9 像素范围内吸附；Alt 临时关闭。交点使用原生有限线条，重合或无法判定时拒绝落点。节点拖动吸附到其他原始线条；垂足/切点用于直线、折线、布纹线、测量的下一点。"><option value="endpoint">端点 / 顶点</option><option value="midpoint">端点＋中点 / 半长点</option><option value="nearest">线条最近点</option><option value="intersection">交点 / 自交点</option><option value="perpendicular" disabled>垂足（从起点）</option><option value="tangent" disabled>切点（从起点）</option><option value="off">不吸附</option></select><label><input type="checkbox" id="grid" checked> 网格</label><label><input type="checkbox" id="show-text" checked> 文字</label><button id="theme" title="切换画布明暗">深色画布</button><button id="recovery-open" aria-haspopup="dialog">本机恢复</button><span class="local-badge">● 文件在浏览器本地处理</span></nav>
+<main><aside class="tools" aria-label="绘图工具">
+<button data-tool="select" class="active" title="选择 / 移动 (V)"><b>↖</b><span>选择</span></button>
+<button data-tool="node" title="编辑节点 (N)"><b>◇</b><span>节点</span></button>
+<button data-tool="line" title="直线 (L)"><b>╱</b><span>直线</span></button>
+<button data-tool="polyline" title="连续折线 (P)，Enter 完成"><b>⌁</b><span>折线</span></button>
+<button data-tool="curve" title="三点二次曲线 (C)"><b>⌒</b><span>曲线</span></button>
+<button data-tool="rectangle" title="矩形 (R)"><b>▭</b><span>矩形</span></button>
+<button id="line-edit-tool" title="按弧长剪开曲线，连接多条线"><b>✂</b><span>修线</span></button>
+<button id="trim-tool" title="以原生曲线交点分区，选择保留或移除区间"><b>⌑</b><span>修剪</span></button>
+<button id="extend-tool" title="沿原曲线或端点切向延伸到参考线"><b>⇥</b><span>延伸</span></button>
+<button id="position-tool" title="基点旋转、任意轴镜像、等比缩放与两点对齐"><b>⊹</b><span>定位</span></button>
+<button id="spread-tool" title="按切线旋转展开或平行加量"><b>⋎</b><span>展开</span></button>
+<button id="dart-tool" title="整省或按比例分省，设置新旧省尖退量"><b>⋈</b><span>转省</span></button>
+<button id="unfold-tool" title="沿直线折边将半片镜像展开为完整裁片"><b>⋄</b><span>对折</span></button>
+<button id="split-tool" title="沿两处边界点间的直线，将裁片分成两片独立闭合轮廓"><b>⊟</b><span>分片</span></button>
+<button id="merge-tool" title="沿等长直边对齐两片，合成一片完整原生轮廓"><b>⊞</b><span>合片</span></button>
+<button id="table-tool" title="从现有格线和文字整理尺寸表，不使用图像识别"><b>▦</b><span>尺寸表</span></button>
+<div class="tool-separator"></div>
+<button data-tool="measure" title="两点距离 (M)"><b>↔</b><span>测量</span></button>
+<button data-tool="grain" title="布纹线 (G)"><b>↟</b><span>布纹</span></button>
+<button data-tool="notch" title="选择基准线，按距离定位关联刀口"><b>∨</b><span>刀口</span></button>
+<button id="seam-tool" title="选择闭合基准后预览缝份"><b>▱</b><span>缝份</span></button>
+<button id="match-tool" title="比较两侧缝合链的弧长与吃势"><b>⇋</b><span>对缝</span></button>
+<button id="grading-tool" title="按尺码与点的 X/Y 位移放码"><b>▱</b><span>放码</span></button>
+<button id="marker-tool" title="按裁剪边界、数量和布纹排料"><b>▥</b><span>排料</span></button>
+<button id="plot-tool" title="1:1 打印、分页拼接和矢量 SVG"><b>▤</b><span>出图</span></button>
+</aside>
+<section class="workspace" id="workspace"><svg id="canvas" xmlns="http://www.w3.org/2000/svg" tabindex="0" aria-label="纸样绘图画布"><defs><pattern id="minor-grid" patternUnits="userSpaceOnUse" width="20" height="20"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#dce1dc" stroke-width=".5"/></pattern></defs><rect id="canvas-bg" width="100%" height="100%" fill="#f6f7f3"/><rect id="grid-bg" width="100%" height="100%" fill="url(#minor-grid)"/><g id="drawing"></g><g id="overlay"></g></svg>
+<div id="welcome" class="welcome"><span class="eyebrow">你的数字版房</span><h1>从一片纸样开始</h1><p>打开 ET PRJ，查看实验性解析结果。<br>也可以直接绘制、测量和编辑新纸样。</p><button id="welcome-open" class="primary">打开 PRJ / DXF / 工程文件</button><button id="demo">体验示例纸样 ↗</button><small>拖入文件即可打开 · 单位 mm</small></div>
+<div class="canvas-hint" id="tool-hint">单击整组选取 · Shift 多选 · 空白处拖动框选 · 空格平移</div><div id="measurement" hidden></div><div id="snap-status" class="snap-status" role="status" hidden></div>
+<div id="toast" role="status" hidden></div></section>
+<aside class="inspector"><section id="construction-panel" hidden>
+<div class="section-heading"><strong id="construction-title">数值绘图</strong><span id="construction-unit">mm</span></div>
+<p id="construction-anchor" class="muted"></p>
+<label>输入方式<select id="construction-mode"><option value="absolute">绝对坐标 X / Y</option><option value="relative">相对位移 ΔX / ΔY</option><option value="polar">长度 / 角度</option></select></label>
+<div class="pair"><label><span id="construction-first-label">X</span><input id="construction-first" maxlength="200" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="绘图第一个数值"></label><label><span id="construction-second-label">Y</span><input id="construction-second" maxlength="200" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="绘图第二个数值"></label></div>
+<p id="construction-status" role="status" class="muted"></p><button id="construction-apply" class="primary" disabled>记录此点 · Enter</button>
+<div class="pair"><button id="construction-locate" disabled>定位预览</button><button id="construction-clear" disabled>清空输入</button></div>
+<div class="pair"><button id="construction-back" disabled>退回一点</button><button id="construction-cancel" disabled>取消草稿</button></div>
+<div class="pair" id="construction-polyline-actions" hidden><button id="construction-finish" disabled>完成折线</button><button id="construction-close" disabled>闭合折线</button></div>
+<p id="construction-policy" class="muted"></p></section><section><div class="section-heading">工程信息 <span id="entity-count">0 条</span></div><div id="import-status" class="import-status">新建工程 · 毫米</div><details id="report" hidden><summary>导入报告</summary><div id="report-content"></div></details><div id="calibration" hidden><p class="muted">Alt 单击一条线，可在属性中按已知长度校准。也可直接输入每个原始单位对应的毫米数，缩放整个工程。</p><input id="unit-scale" type="number" min=".000001" step="any" value="1" aria-label="毫米换算系数"><button id="calibrate">确认毫米比例</button></div></section>
+<section id="inspection-panel"><div class="section-heading">轮廓检查 <span id="check-unit">mm</span></div><div class="pair"><label>端点容差<input id="check-tolerance" type="number" min="0" step="any" value="0.1"></label><button id="inspect-all">检查轮廓</button></div><p id="inspection-summary" class="muted" role="status">检查端点间隙、原始线段与原生曲线。</p><div id="inspection-results"></div><div id="inspection-details" hidden><p id="inspection-note" class="muted"></p><div id="inspection-issues"></div><p id="inspection-focus-status" role="status" class="muted"></p><svg id="inspection-zoom" viewBox="0 0 240 150" role="img" aria-label="问题区域局部放大示意" hidden></svg></div><button id="export-inspection" disabled>保存检查报告</button></section>
+<section><div class="section-heading">裁片与组合 <span id="group-count">0 组</span></div><div id="group-list" class="entity-list"></div><p class="muted">Shift 多选 · 左→右框选包含项 · 右→左框选相交项</p></section><section><div class="section-heading">图元 <span>选择后编辑</span></div><input id="filter" placeholder="搜索名称或图层" aria-label="搜索图元"><div id="entity-list" class="entity-list"></div></section>
+<section id="properties"><div class="section-heading">属性</div><div id="no-selection" class="muted">选择一条线或一片纸样，查看尺寸与编辑操作。</div><div id="selected-properties" hidden><div id="single-properties"><label>名称<input id="entity-name"></label><label>图层<select id="entity-layer"><option value="outline">轮廓</option><option value="internal">内部线</option><option value="grain">布纹线</option><option value="notch">刀口</option><option value="annotation">文字</option></select></label><div id="text-properties" hidden><label>文字内容<textarea id="text-content" rows="2"></textarea></label><label>字高（当前单位）<input id="text-height" type="number" min=".01" step=".1"></label></div></div><div id="dimensions" class="dimensions"></div><details id="reference-calibration" hidden><summary>按已知长度校准</summary><p class="muted">选择单条线，对照 ET 中的同一量测方式。确认后缩放整个工程，可撤销。</p><label>量测方式<select id="reference-mode"><option value="path">沿线总长（折线近似）</option><option value="chord">两端点直线距离</option></select></label><label>ET 中的已知长度（mm）<input id="known-length" type="number" min="0.000001" step="any" placeholder="请输入毫米数"></label><p id="reference-preview" class="muted"></p><button id="calibrate-reference">按此长度校准整个工程</button></details><details id="group-source" hidden><summary>裁片归属来源</summary><div id="group-source-content"></div></details><details id="source-details" hidden><summary>文件记录来源</summary><div id="source-content"></div></details><div class="pair"><label>移动 X<input id="move-x" type="number" value="0" step="1"></label><label>移动 Y<input id="move-y" type="number" value="0" step="1"></label></div><button id="translate">应用位移</button><div class="pair"><label>旋转 °<input id="angle" type="number" value="90"></label><button id="rotate">旋转</button></div><div class="pair"><button id="mirror">水平镜像</button><button id="duplicate">复制</button></div><label>组合名称<input id="group-name" placeholder="例如：前裤片"></label><div class="pair"><button id="group">建立组合</button><button id="ungroup">解散组合</button></div><div class="pair"><button id="rename-group">重命名组合</button><button id="fit-selected">定位所选</button></div><button id="delete" class="danger">删除所选</button></div></section>
+<section id="merge-panel">
+<div class="section-heading">直边合片 <span>mm · 原生曲线</span></div>
+<button id="merge-return">返回选择，选取下一片</button>
+<div class="merge-source"><button id="merge-capture-first">将当前选区记录为第一片</button><label>第一片净线轮廓<select id="merge-first-basis"></select></label><label>第一片接合直边<select id="merge-first-edge"></select></label><p id="merge-first-info" class="muted"></p><button id="merge-pick-first" aria-pressed="false">拾取第一片接边</button></div>
+<div class="merge-source"><button id="merge-capture-second">将当前选区记录为第二片</button><label>第二片净线轮廓<select id="merge-second-basis"></select></label><label>第二片接合直边<select id="merge-second-edge"></select></label><p id="merge-second-info" class="muted"></p><button id="merge-pick-second" aria-pressed="false">拾取第二片接边</button></div>
+<p id="merge-pick-status" class="muted"></p><button id="merge-cancel-pick" hidden>取消拾取</button>
+<p class="muted">须使用两条等长直边；曲线接边或真实长度差需先修整。合片后两条接边从外轮廓移除。</p>
+<label>原轮廓连接容差 mm<input id="merge-gap" type="number" step="any" min="0" max="1" value=".1"></label>
+<label class="merge-check"><input id="merge-mirror" type="checkbox">镜像第二片（字形也会反射）</label>
+<label class="merge-check"><input id="merge-guide" type="checkbox" checked>保留内部接合参考线</label>
+<label class="merge-check"><input id="merge-keep" type="checkbox" checked>保留原两片，生成独立合片</label>
+<div class="pair"><button id="merge-preview">生成预览</button><button id="merge-fit" disabled>查看合片</button></div>
+<div id="merge-status" role="status"></div><button id="merge-apply" class="primary" disabled>保留两片并生成合片</button>
+<p class="muted">练习样片仅用于演示，未经服装版型验证。</p><button id="merge-demo">载入直边合片练习</button>
+</section>
+<section id="split-panel">
+<div class="section-heading">裁片分割 <span>mm · 原生曲线</span></div>
+<div class="pair"><button id="split-capture">记录当前裁片</button><button id="split-return">返回选择</button></div>
+<label>净线轮廓<select id="split-basis"></select></label><p id="split-source" class="muted"></p>
+<div class="pair"><label>A 弧长 %<input id="split-a" type="number" step="any" min="0" max="99.999999" value="0"></label><label>B 弧长 %<input id="split-b" type="number" step="any" min="0" max="99.999999" value="50"></label></div>
+<div class="pair"><button id="split-pick-a" aria-pressed="false">在画布拾取 A</button><button id="split-pick-b" aria-pressed="false">在画布拾取 B</button></div>
+<p id="split-pick-status" class="muted"></p><button id="split-cancel-pick" hidden>取消拾取</button>
+<p class="muted">分片 1 沿原轮廓 A → B；分片 2 沿 B → A。两片各自增加一条直线分割边。</p>
+<label>切线上内部线 / 文字归属<select id="split-on-cut"><option value="first">分片 1</option><option value="second">分片 2</option><option value="both">两片各保留一份</option></select></label>
+<label>轮廓外定位点的图元保留到<select id="split-outside"><option value="first">分片 1（需核对）</option><option value="second">分片 2（需核对）</option></select></label>
+<label>原轮廓连接容差 mm<input id="split-gap" type="number" step="any" min="0" max="1" value=".1"></label>
+<label class="split-check"><input id="split-keep" type="checkbox" checked>保留原片，生成两片独立裁片</label>
+<div class="pair"><button id="split-preview">生成预览</button><button id="split-fit" disabled>查看两片</button></div>
+<div id="split-status" role="status"></div><button id="split-apply" class="primary" disabled>保留原片并生成两片</button>
+<p class="muted">练习样片仅用于演示，未经服装版型验证。</p><button id="split-demo">载入分片练习裁片</button>
+</section>
+<section id="unfold-panel">
+<div class="section-heading">半片对折展开 <span>mm · 原生曲线</span></div>
+<div class="pair"><button id="unfold-capture">记录当前半片</button><button id="unfold-return">返回选择</button></div>
+<label>半片净线轮廓<select id="unfold-basis"></select></label>
+<label>直线折边候选（请确认）<select id="unfold-edge"></select></label>
+<p id="unfold-info" class="muted"></p><button id="unfold-pick" aria-pressed="false">在画布拾取折边</button>
+<p class="muted">选中的直边作为对折轴，另一半由原生线条镜像生成。其余外轮廓须完全位于轴的一侧。</p>
+<label>轮廓间隙连接容差 mm<input id="unfold-gap" type="number" step="any" min="0" max="1" value=".1"></label>
+<label class="unfold-check"><input id="unfold-centerline" type="checkbox" checked>保留内部对折线</label>
+<label class="unfold-check"><input id="unfold-text" type="checkbox">同时镜像文字（字形也会反射）</label>
+<label class="unfold-check"><input id="unfold-keep" type="checkbox" checked>保留半片，生成独立完整片</label>
+<p class="muted">内部线与布纹线随裁片镜像；轴上的线只复制一次。文字默认保留原侧一份。</p>
+<div class="pair"><button id="unfold-preview">生成预览</button><button id="unfold-fit" disabled>查看对照</button></div>
+<div id="unfold-status" role="status"></div><button id="unfold-apply" class="primary" disabled>保留半片并生成完整片</button>
+<p class="muted">练习样片仅用于演示，未经服装版型验证。</p><button id="unfold-demo">载入对折练习半片</button>
+</section>
+<section id="dart-panel">
+<div class="section-heading">转省与分省 <span>mm · 原生曲线</span></div>
+<div class="pair"><button id="dart-capture">记录当前裁片</button><button id="dart-return">返回选择</button></div>
+<label>原始净线轮廓<select id="dart-basis"></select></label>
+<label>直线凹角候选（请确认省口）<select id="dart-source"></select></label><p id="dart-info" class="muted"></p>
+<button id="dart-pick-apex">在画布拾取省尖</button>
+<p class="muted">须为两条共尖直省边；边长差不超过 0.000001 mm。候选只反映几何凹角，PRJ 中的省道语义仍需确认。</p>
+<label>新省口位置（原轮廓周长 %）<input id="dart-target" type="number" step="any" min="0" max="99.999999" value="50"></label><button id="dart-pick-target">在画布拾取新位置</button>
+<p id="dart-pick-status" class="muted"></p><button id="dart-cancel-pick" hidden>取消拾取</button>
+<label>省角转移比例 %<input id="dart-percent" type="number" step="any" min="0.000001" max="100" value="100"></label>
+<p class="muted">100% 闭合原省；50% 将绕原省尖的角度各分一半。比例不代表两处省口宽度之比。</p>
+<div class="pair"><label>新省尖退量 mm<input id="dart-new-retreat" type="number" step="any" min="0" value="0"></label><label>剩余原省退量 mm<input id="dart-old-retreat" type="number" step="any" min="0" value="0" disabled></label></div>
+<button id="dart-retreat-ten">将有效省尖各退 10 mm</button>
+<p class="muted">退量从旋转支点沿中心线量向省口。分省须至少退一处，避免两省共尖；退尖会增加面积并改变实际省角。按版型需要填写，10 mm 仅为快捷输入。</p>
+<label>闭省时移动哪一侧<select id="dart-side"><option value="after">省边 2 → 新位置的一侧</option><option value="before">新位置 → 省边 1 的一侧</option></select></label>
+<label>切线上内部线 / 文字归属<select id="dart-on-cut"><option value="fixed">固定侧</option><option value="moving">移动侧</option></select></label>
+<label>原轮廓连接容差 mm<input id="dart-gap" type="number" step="any" min="0" max="1" value=".1"></label>
+<label class="dart-check"><input id="dart-centerline" type="checkbox" checked>生成新省及剩余原省中心线</label>
+<label class="dart-check"><input id="dart-keep" type="checkbox" checked>保留原片，生成独立转省片</label>
+<p class="muted">红虚线为操作前省口，金色为新省边，紫色为剩余原省；橙色图元随动，蓝色图元固定。原内部线不会随退尖自动修剪；新片需核对并重建工艺关联。</p>
+<div class="pair"><button id="dart-preview">生成预览</button><button id="dart-fit" disabled>查看对照</button></div>
+<div id="dart-status" role="status"></div><button id="dart-apply" class="primary" disabled>保留原片并生成转省片</button>
+<p class="muted">练习样片仅用于演示，未经服装版型验证。</p><button id="dart-demo">载入转省练习样片</button>
+</section>
+<section id="spread-panel">
+<div class="section-heading">剪开展开 <span>mm · 原生曲线</span></div>
+<div class="pair"><button id="spread-capture">记录当前裁片</button><button id="spread-return">返回选择</button></div>
+<label>展开轮廓<select id="spread-basis"></select></label><p id="spread-source" class="muted"></p>
+<p class="muted">请选择需要加量的净线。PRJ 主轮廓不自动代表净线。切线须位于裁片内部，且仅在 A、B 两点接触边界。</p>
+<div class="pair"><label>A 弧长 %<input id="spread-a" type="number" step="any" min="0" max="99.999999" value="0"></label><label>B 弧长 %<input id="spread-b" type="number" step="any" min="0" max="99.999999" value="50"></label></div>
+<div class="pair"><button id="spread-pick-a">拾取 A 支点</button><button id="spread-pick-b">拾取 B 展开口</button></div>
+<p id="spread-pick-status" class="muted"></p><button id="spread-cancel-pick" hidden>取消拾取</button>
+<label>移动侧<select id="spread-side"><option value="first">沿轮廓 A → B 的一侧</option><option value="second">沿轮廓 B → A 的一侧</option></select></label>
+<label>展开方式<select id="spread-mode"><option value="rotate">绕 A 旋转展开</option><option value="parallel">垂直切线平行展开</option></select></label>
+<label id="spread-angle-field">展开角度 °<input id="spread-angle" type="number" step="any" min=".001" max="170" value="15"></label>
+<label id="spread-width-field">增加宽度 mm<input id="spread-width" type="number" step="any" min=".001" max="100000" value="20"></label>
+<label>轮廓间隙连接容差 mm<input id="spread-gap" type="number" step="any" min="0" max="1" value=".1"></label>
+<label>切线上内部线 / 文字归属<select id="spread-on-cut"><option value="fixed">固定侧</option><option value="moving">移动侧</option></select></label>
+<label class="spread-check"><input id="spread-keep" type="checkbox" checked>保留原片，生成独立展开片</label>
+<p class="muted">橙色为移动轮廓，蓝色为固定轮廓，虚线为新增连接边。展开片需重新建立工艺关联；此操作用于加量，尚不包含闭省转省。</p>
+<div class="pair"><button id="spread-preview">生成预览</button><button id="spread-fit" disabled>查看对照</button></div>
+<div id="spread-status" role="status"></div><button id="spread-apply" class="primary" disabled>保留原片并生成展开片</button>
+</section>
+<section id="position-panel">
+<div class="section-heading">精确定位 <span id="position-unit">mm</span></div>
+<div class="pair"><button id="position-capture">记录当前选区</button><button id="position-return">返回选择</button></div>
+<p id="position-count" class="muted"></p>
+<label>操作<select id="position-operation"><option value="move">基点移动</option><option value="rotate">绕基点旋转</option><option value="mirror">任意轴镜像</option><option value="scale">定点等比缩放</option><option value="align">两点对齐</option></select></label>
+<div class="position-point" id="position-a-field"><div class="position-point-head"><span>基点 A</span><button id="position-pick-a">拾取 A</button></div><div class="pair"><label>X<input id="position-a-x" type="number" step="any" value="0"></label><label>Y<input id="position-a-y" type="number" step="any" value="0"></label></div></div>
+<div class="position-point" id="position-b-field"><div class="position-point-head"><span>原图 / 轴点 B</span><button id="position-pick-b">拾取 B</button></div><div class="pair"><label>X<input id="position-b-x" type="number" step="any" value="50"></label><label>Y<input id="position-b-y" type="number" step="any" value="0"></label></div></div>
+<div class="position-point" id="position-target-a-field"><div class="position-point-head"><span>目标 A</span><button id="position-pick-target-a">拾取目标 A</button></div><div class="pair"><label>X<input id="position-target-a-x" type="number" step="any" value="100"></label><label>Y<input id="position-target-a-y" type="number" step="any" value="0"></label></div></div>
+<div class="position-point" id="position-target-b-field"><div class="position-point-head"><span>目标 B</span><button id="position-pick-target-b">拾取目标 B</button></div><div class="pair"><label>X<input id="position-target-b-x" type="number" step="any" value="150"></label><label>Y<input id="position-target-b-y" type="number" step="any" value="0"></label></div></div>
+<label id="position-angle-field">旋转角度 °（正值逆时针）<input id="position-angle" type="number" step="any" value="90"></label>
+<label id="position-factor-field">缩放比例（1 = 原尺寸）<input id="position-factor" type="number" step="any" min=".001" max="1000" value="1.1"></label>
+<label id="position-align-field" class="position-check"><input id="position-align-scale" type="checkbox">按两段长度等比缩放；未勾选时保持原尺寸</label>
+<p id="position-pick-status" class="muted"></p><button id="position-cancel-pick" hidden>取消拾取</button>
+<label class="position-check"><input id="position-copy" type="checkbox">保留原图，生成定位副本</label>
+<p class="muted">橙色为预览，原图保留作对照。缩放保留缝份宽度与刀口深度等工艺值；关联将在预览时重算。</p>
+<div class="pair"><button id="position-preview">生成预览</button><button id="position-fit" disabled>查看对照</button></div>
+<div id="position-status" role="status"></div><button id="position-apply" class="primary" disabled>应用定位</button>
+</section>
+<section id="line-edit-panel">
+<div class="section-heading">线条修整 <span>mm · 原生曲线</span></div>
+<label>操作<select id="line-operation"><option value="split">剪开一条线</option><option value="join">连接多条线</option></select></label>
+<div class="pair"><button id="line-capture">用当前选区</button><button id="line-clear">清空原线</button></div>
+<p class="muted">进入左侧“修线”后，可在画布逐条点选。连接按列表顺序，可调整次序和方向。</p>
+<p id="line-source-info" class="muted"></p><div id="line-sources"></div>
+<div id="line-split-fields"><label>位置单位<select id="line-position-unit"><option value="percent">总弧长百分比 %</option><option value="mm">距起点弧长 mm</option></select></label>
+<div class="pair"><label><span id="line-position-a-label">分割位置</span><input id="line-position-a" type="number" value="50" step="any"></label><label id="line-position-b-field" hidden>位置 B<input id="line-position-b" type="number" value="75" step="any"></label></div>
+<p class="muted">从画布标出的“起”沿原线方向计量。闭合线 A→B 为第一段，其余为第二段。</p></div>
+<div id="line-join-fields" hidden><label>允许的端点间隙 mm<input id="line-gap" type="number" value="0.1" min="0" max="10" step="any"></label><label class="line-check"><input id="line-close" type="checkbox">连接后闭合首尾</label><p class="muted">间隙内补直线，不移动原端点；大于上限则停止。自动定向会选择间隙总长最小的方向。</p></div>
+<label class="line-check"><input id="line-keep" type="checkbox">保留原线，生成独立副本</label>
+<div class="pair"><button id="line-preview" class="primary">生成修整预览</button><button id="line-fit" disabled>定位结果</button></div>
+<div id="line-status" role="status" aria-live="polite"></div>
+<button id="line-apply" class="primary" disabled>替换原线并应用</button>
+<p class="muted">替换原线会更新组合轮廓；原缝份、刀口、对缝、放码和排料关联需按预览报告重建。应用后可撤销。</p>
+</section>
+<section id="trim-panel">
+<div class="section-heading">按交点修剪 <span>mm · 原生曲线</span></div>
+<p class="muted">先记录目标与有限的切割参考线，再选择交点之间的区间。切割参考线保持原样。</p>
+<p id="trim-target-name" class="muted">尚未记录目标</p>
+<div class="pair"><button id="trim-capture-target">选区作为目标</button><button id="trim-pick-target">拾取目标</button></div>
+<div class="pair"><button id="trim-capture-cutters">选区作为参考</button><button id="trim-pick-cutters">拾取参考</button></div>
+<div id="trim-cutters"></div><p id="trim-pick-status" class="muted"></p>
+<details><summary>精度设置</summary><label>切段几何误差上限 mm<input id="trim-error" type="number" value="0.000001" min="0" max="0.01" step="any"></label><p class="muted">超出上限或交点无法完整判定时停止，不使用部分结果。重合路径须先处理；不会自动延长参考线。</p></details>
+<div class="pair"><button id="trim-analyze" class="primary" disabled>分析交点</button><button id="trim-clear">清空记录</button></div>
+<label>所选区间的操作<select id="trim-action"><option value="remove">删除所选区间</option><option value="keep">只保留所选区间</option></select></label>
+<div class="pair"><button id="trim-pick-region" disabled>画布选区间</button><button id="trim-fit" disabled>定位目标</button></div>
+<div id="trim-regions" aria-label="交点之间的区间"></div>
+<label class="trim-check"><input id="trim-keep" type="checkbox">保留原线，生成独立副本</label>
+<div id="trim-status" role="status" aria-live="polite"></div><button id="trim-apply" class="primary" disabled>替换目标线并应用</button>
+<p class="muted">应用后可撤销。替换可能断开裁片轮廓，并使原线关联的缝份、刀口、对缝、放码和排料失效。</p>
+</section>
+<section id="extend-panel">
+<div class="section-heading">端点延伸 <span>mm · 原生曲线</span></div>
+<p class="muted">选择开放目标线与有限参考线，延伸到路径上的第一个交点。参考线保持原样。</p>
+<p id="extend-target-name" class="muted">尚未记录目标</p>
+<div class="pair"><button id="extend-capture-target">选区作为目标</button><button id="extend-pick-target">拾取目标</button></div>
+<div class="pair"><button id="extend-capture-references">选区作为参考</button><button id="extend-pick-references">拾取参考</button></div>
+<div id="extend-references"></div><p id="extend-pick-status" class="muted"></p>
+<div class="pair"><label>延伸哪一端<select id="extend-end"><option value="end">原终点</option><option value="start">原起点</option></select></label><button id="extend-pick-end" disabled>画布拾取端点</button></div>
+<label>延伸方式<select id="extend-mode"><option value="native">沿原曲线延续</option><option value="tangent">沿端点切向直线</option></select></label>
+<p id="extend-mode-note" class="muted"></p>
+<label>最大延伸长度 mm<input id="extend-length" type="number" value="100" min="0" max="1000000" step="any"></label>
+<details><summary>精度设置</summary><label>几何误差上限 mm<input id="extend-error" type="number" value="0.000001" min="0" max="0.01" step="any"></label><label>长度核对精度 mm<input id="extend-length-error" type="number" value="0.0001" min="0" max="0.01" step="any"></label><p class="muted">长度核对使用上下界，同时覆盖曲线交点误差和保存后的控制点舍入。无法证明长度不超限时停止。</p></details>
+<label class="extend-check"><input id="extend-keep" type="checkbox">保留原线，生成独立副本</label>
+<div class="pair"><button id="extend-preview" class="primary" disabled>生成延伸预览</button><button id="extend-clear">清空记录</button></div>
+<button id="extend-fit" disabled>定位延伸结果</button><div id="extend-status" role="status" aria-live="polite"></div>
+<button id="extend-apply" class="primary" disabled>替换目标线并应用</button>
+<p class="muted">原曲线保留，橙色显示新增部分。替换会使原线关联的工艺失效，并可能改变裁片接边；应用后可撤销。</p>
+</section>
+<section id="seam-panel">
+  <div class="section-heading">缝份与偏移 <span>mm</span></div><p id="seam-hint" class="muted">选择有轮廓定义的裁片或闭合图元。</p>
+  <div id="seam-controls" hidden>
+    <label>基准轮廓<select id="seam-base"></select></label><p class="muted">PRJ 轮廓的净线、毛线含义尚未确认。预览中蓝色为基准，橙色为结果。</p>
+    <label>宽度设置<select id="seam-width-mode"><option value="uniform">统一宽度</option><option value="edges">逐边宽度</option></select></label>
+    <div class="pair"><label>默认 / 批量宽度 mm<input id="seam-width" type="number" min=".001" step=".5" value="10"></label><label>方向<select id="seam-direction"><option value="out">向外</option><option value="in">向内</option></select></label></div>
+    <div id="seam-edge-controls" hidden><button id="seam-fill-widths">将上方宽度应用到全部边</button><p id="seam-edge-note" class="muted"></p><div id="seam-edge-list"></div><p class="muted">凹形变宽若使局部边消失或边界相交，会拒绝生成；凹形变宽内缩目前仅支持尖角。可减小宽度差或改用统一宽度。圆接在相邻宽度间渐变；0 宽不代表自动完成折边角位。</p></div>
+    <label>转角<select id="seam-join"><option value="miter">尖角（限长）</option><option value="round">圆角 / 变宽圆接</option><option value="square">方角</option></select></label>
+    <details><summary>计算设置</summary><div class="pair"><label>尖角限长倍数<input id="seam-miter" type="number" min="2" max="20" value="2"></label><label>连接容差 mm<input id="seam-gap" type="number" min="0" max="10" step=".01" value=".1"></label></div><p class="muted">容差内的断点仅在计算轮廓中直线连接，不改动基准。变宽连接段采用两侧较小宽度。曲线和圆角采样容差 0.01 mm，坐标网格 0.001 mm。</p></details>
+    <div class="pair"><button id="preview-seam">预览</button><button id="fit-seam" disabled>定位预览</button></div><p id="seam-status" class="muted" role="status"></p><button id="apply-seam" class="primary" disabled>应用缝份</button><button id="detach-seam" hidden>解除关联，保留线条</button><p class="muted">关联缝份在结束编辑后随基准重算。生成失败时保留旧线并标红，需修复后才能导出 DXF。</p>
+  </div>
+</section>
+<section id="control-editor" hidden><div class="section-heading" id="control-title">节点坐标</div><p id="curve-info" class="muted"></p><label>点序号<input id="control-index" type="number" min="1" step="1" value="1"></label><div class="pair"><label>X<input id="control-x" type="number" step="any"></label><label>Y<input id="control-y" type="number" step="any"></label></div><button id="apply-control">更新此点</button><p class="muted">节点工具可拖动圆点。曲线编辑保持其余控制点不变，不自动移动相邻线条。</p></section>
+<section class="precision"><div class="section-heading">精确绘制</div><p class="muted">以画布中心创建指定尺寸的矩形。</p><div class="pair"><label>宽 mm<input id="rect-w" type="number" value="200" min=".1"></label><label>高 mm<input id="rect-h" type="number" value="300" min=".1"></label></div><button id="precise-rect">创建矩形</button></section>
+<section id="notch-panel">
+  <div class="section-heading">关联刀口 <span>mm</span></div>
+  <p id="notch-hint" class="muted"></p>
+  <div id="notch-controls" hidden>
+    <label>基准线<select id="notch-base"></select></label>
+    <label>刀口组<select id="notch-edit"><option value="">新建刀口</option></select></label>
+    <div class="pair"><label>定位方式<select id="notch-mode"><option value="start">从起点量</option><option value="end">从终点量</option><option value="ratio">沿线比例</option></select></label><label><span id="notch-position-label">距所选端点 mm</span><input id="notch-position" type="number" min="0" step="any" value="25"></label></div>
+    <label>标记位置<select id="notch-target"><option value="">基准线上</option></select></label>
+    <label>侧向（沿起点 → 终点）<select id="notch-side"><option value="1">左侧</option><option value="-1">右侧</option></select></label>
+    <div class="pair"><label>数量<select id="notch-count"><option value="1">单刀口</option><option value="2">双刀口</option><option value="3">三刀口</option></select></label><label>沿线间距 mm<input id="notch-spacing" type="number" min=".01" step=".5" value="3"></label></div>
+    <div class="pair"><label>形状<select id="notch-shape"><option value="line">直刀口标记</option><option value="v">V 形标记</option></select></label><label>深度 mm<input id="notch-depth" type="number" min=".01" step=".5" value="3"></label></div>
+    <label>V 形开口宽 mm<input id="notch-width" type="number" min=".01" step=".5" value="3"></label>
+    <div class="pair"><button id="preview-notch">预览刀口</button><button id="fit-notch" disabled>定位刀口</button></div>
+    <p id="notch-status" class="muted" role="status"></p>
+    <button id="apply-notch" class="primary" disabled>添加关联刀口</button>
+    <button id="detach-notch" hidden>解除关联，保留标记</button>
+    <p class="muted">生成独立标记线，不挖切裁片边界。修改基准或缝份后自动重算；失败时保留旧标记并标红，修复或解除关联后才能导出 DXF。</p>
+  </div>
+</section>
+<section id="match-panel">
+  <div class="section-heading">缝合长度核对 <span>弧长 · mm</span></div>
+  <label>已保存的核对<select id="match-saved"><option value="">新建核对</option></select></label>
+  <div class="pair"><button id="match-new">新建核对</button><button id="match-fit">定位两侧</button></div>
+  <label>名称<input id="match-name" value="缝合核对" maxlength="200"></label>
+  <p id="match-pick-status" class="muted"></p>
+  <div class="match-side" data-side="a"><button id="match-pick-a">拾取 A · 基准侧</button><div id="match-a-edges"></div><div class="pair"><button id="match-reverse-a">反向整链</button><button id="match-clear-a">清空 A</button></div></div>
+  <div class="match-side" data-side="b"><button id="match-pick-b">拾取 B · 对应侧</button><div id="match-b-edges"></div><div class="pair"><button id="match-reverse-b">反向整链</button><button id="match-clear-b">清空 B</button></div></div>
+  <details><summary>两端扣除与连续边容差</summary><div class="pair"><label>A 起点扣除 mm<input id="match-a-start" type="number" min="0" step="any" value="0"></label><label>A 终点扣除 mm<input id="match-a-end" type="number" min="0" step="any" value="0"></label></div><div class="pair"><label>B 起点扣除 mm<input id="match-b-start" type="number" min="0" step="any" value="0"></label><label>B 终点扣除 mm<input id="match-b-end" type="number" min="0" step="any" value="0"></label></div><label>连续边端点容差 mm<input id="match-gap" type="number" min="0" max="10" step=".01" value=".1"></label><p class="muted">扣除量沿弧长计算。链内间隙不会计入缝长，也不会自动补线。反向整链时两端扣除量随之交换。</p></details>
+  <label>核对方式<select id="match-mode"><option value="whole">整条缝线</option><option value="sections">按对应点分段</option></select></label>
+  <div id="match-whole-ease"><div class="pair"><label>目标吃势单位<select id="match-ease-mode"><option value="mm">mm</option><option value="percent">相对 A 的 %</option></select></label><label>B 比 A 多<input id="match-ease" type="number" step="any" value="0"></label></div></div>
+  <div id="match-sections" hidden>
+    <p class="muted">依次指定 A / B 的对应位置。距离从扣除后的有效起终点量起；比例按有效长度计算。关联刀口使用原始基准上的实际站点。</p>
+    <div id="match-landmarks"></div>
+    <details id="match-landmark-editor"><summary id="match-landmark-title">添加一对分界点</summary>
+      <label>分界点名称<input id="match-landmark-name" maxlength="100" placeholder="例如：袖山顶 / 肩点"></label>
+      <div class="pair">
+        <div><label>A 定位<select id="match-landmark-a-kind"><option value="start">从有效起点 mm</option><option value="end">从有效终点 mm</option><option value="ratio">有效长度 %</option><option value="notch">关联刀口</option></select></label><label><span id="match-landmark-a-caption">距离 mm</span><input id="match-landmark-a-value" aria-label="A 分界位置" type="number" min="0" step="any"></label><select id="match-landmark-a-notch" aria-label="A 关联刀口" hidden></select></div>
+        <div><label>B 定位<select id="match-landmark-b-kind"><option value="start">从有效起点 mm</option><option value="end">从有效终点 mm</option><option value="ratio">有效长度 %</option><option value="notch">关联刀口</option></select></label><label><span id="match-landmark-b-caption">距离 mm</span><input id="match-landmark-b-value" aria-label="B 分界位置" type="number" min="0" step="any"></label><select id="match-landmark-b-notch" aria-label="B 关联刀口" hidden></select></div>
+      </div>
+      <div class="pair"><button id="match-landmark-apply">添加对应点</button><button id="match-landmark-cancel">清空输入</button></div>
+    </details>
+    <p class="muted">新增、移除或调整分界点顺序后，受影响的新区间吃势归零，请逐段确认。切回整条核对会清除本草稿的分段设置。</p>
+    <button id="match-reverse-both">同时反向两侧及对应点</button>
+    <div id="match-section-targets"></div>
+  </div>
+  <label><span id="match-tolerance-label">允许偏差 ± mm</span><input id="match-tolerance" type="number" min="0" max="10000" step=".1" value=".5"></label>
+  <p class="muted">正值表示 B 需要比 A 长；负值表示 B 较短。请自行确认所选为净缝线，PRJ 的净线/毛线语义尚未确定。</p>
+  <div id="match-result" role="status"></div>
+  <details><summary>计算精度说明</summary><p id="match-numerics" class="muted"></p></details>
+  <label class="match-visible"><input id="match-show" type="checkbox" checked> 显示 A / B 与步进位置</label>
+  <label>沿 A 步进 0–100%<input id="match-walk" type="range" min="0" max="100" step=".1" value="0"></label>
+  <p id="match-walk-status" class="muted"></p><p id="match-walk-help" class="muted">B 按目标吃势均匀分配步长。此预览不移动纸样。</p>
+  <button id="match-save" class="primary">保存核对关系</button>
+  <div class="pair"><button id="match-export">导出核对报告</button><button id="match-delete" class="danger" hidden>删除核对</button></div>
+  <p class="muted">关系随工程文件保存，编辑基准后重新核对。DXF 仅导出几何，不包含核对关系；偏差提示不阻止几何导出。</p>
+</section>
+<section id="plot-panel">
+<div class="section-heading">1:1 出图 <span>矢量 · 毫米</span></div>
+<label>出图来源<select id="plot-source"></select></label>
+<div class="pair"><button id="plot-capture">用当前选区</button><button id="plot-return">返回纸样</button></div>
+<p id="plot-selection-info" class="muted"></p>
+<label>输出方式<select id="plot-mode"><option value="tiles">分页拼接</option><option value="full">纸卷整幅 · 自动长度</option></select></label>
+<div id="plot-paper-fields"><div class="pair"><label>纸张<select id="plot-paper"><option>A4</option><option>A3</option><option>A2</option><option>A1</option><option>A0</option><option>Letter</option><option>Legal</option><option value="custom">自定义</option></select></label><label>纸张方向<select id="plot-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label></div>
+<div class="pair" id="plot-custom-fields" hidden><label>纸宽 mm<input id="plot-custom-width" type="number" value="210" step="any"></label><label>纸高 mm<input id="plot-custom-height" type="number" value="297" step="any"></label></div></div>
+<label id="plot-roll-field" hidden>纸卷宽度 mm<input id="plot-roll-width" type="number" value="914" step="any"></label>
+<div class="pair"><label>页边留量 mm<input id="plot-margin" type="number" min="5" max="50" value="10" step="any"></label><label id="plot-overlap-field">拼接重叠 mm<input id="plot-overlap" type="number" min="0" max="50" value="10" step="any"></label></div>
+<div class="pair"><label>图形旋转<select id="plot-rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label><label>出图线宽 mm<input id="plot-line-width" type="number" min=".05" max="1" value=".18" step=".01"></label></div>
+<div class="plot-checks"><label><input id="plot-color" type="checkbox">保留图层颜色</label><label><input id="plot-text" type="checkbox" checked>显示源文字</label><label><input id="plot-marks" type="checkbox" checked>拼接框与定位十字</label><label><input id="plot-calibration" type="checkbox" checked>附加 100 mm 校准页</label></div>
+<details><summary>选择出图图层</summary><p class="muted">从当前来源读取图层；隐藏图层会改变出图范围。</p><div id="plot-layers"></div></details>
+<div class="pair"><button id="plot-preview" class="primary">生成预览</button><button id="plot-fit" disabled>适合当前页</button></div>
+<div id="plot-status" role="status" aria-live="polite">先生成预览，再打印或导出。</div>
+<div class="pair"><button id="plot-prev" disabled>上一页</button><button id="plot-next" disabled>下一页</button></div>
+<select id="plot-page" aria-label="出图预览页码" disabled></select><div id="plot-map" aria-label="分页位置图"></div>
+<button id="plot-print" class="primary" disabled>打印 / 保存 PDF</button>
+<div class="pair"><button id="plot-html" disabled>保存打印文件</button><button id="plot-svg" disabled>整幅 SVG</button></div>
+<div class="pair"><button id="plot-page-svg" disabled>当前页 SVG</button><button id="plot-report" disabled>出图报告</button></div>
+<button id="plot-save-settings">保存出图设置到工程</button>
+<p class="muted">打印文件可离线打开。打印时选相同纸张、100% 或实际大小，关闭页眉页脚；先量校准页的 X/Y 两方向。保存设置后仍需保存工程文件。</p>
+<p class="muted">分页从左到右、从上到下。裁去后一页内容框左/上方空白边，叠放重叠区并对齐十字。打印快照不会随之后的纸样修改自动更新。</p>
+</section>
+<section id="marker-panel">
+<div class="section-heading">裁片排料 <span>mm · 独立布幅</span></div>
+<select id="marker-saved" aria-label="已保存排料方案"></select>
+<div class="pair"><button id="marker-new">新方案</button><button id="marker-source">返回纸样选片</button></div>
+<p class="muted">先在纸样中选完整裁片，再选定裁剪边界。布纹沿布长 Y；原始角度从 X 正方向逆时针量。</p>
+<label>新增裁片的尺码来源<select id="marker-size"><option value="">当前基码</option></select></label>
+<label>所选裁片的裁剪边界<select id="marker-boundary"></select></label>
+<button id="marker-add">加入排料清单</button>
+<label>方案名称<input id="marker-name" value="排料方案" maxlength="200"></label>
+<div class="pair"><label>布宽 mm<input id="marker-width" type="number" value="1500" step="any"></label><label>最大布长 mm<input id="marker-length" type="number" value="10000" step="any"></label></div>
+<div class="pair"><label>片间距 mm<input id="marker-spacing" type="number" value="3" step="any"></label><label>布边留量 mm<input id="marker-margin" type="number" value="10" step="any"></label></div>
+<details><summary>轮廓计算容差</summary><div class="pair"><label>闭合间隙 mm<input id="marker-gap" type="number" value=".1" min="0" max="1" step=".01"></label><label>曲线近似 mm<input id="marker-tolerance" type="number" value=".01" min=".005" max=".1" step=".005"></label></div><p>容差内间隙仅在排料边界中连接。内孔按实心占料。近似误差计入间距与边距。</p></details>
+<label>裁片清单<select id="marker-item"></select></label>
+<div id="marker-item-fields" hidden>
+<div class="pair"><label>原向片数<input id="marker-quantity" type="number" min="0" step="1"></label><label>镜像片数<input id="marker-mirror-quantity" type="number" min="0" step="1"></label></div>
+<label>允许方向<select id="marker-direction"><option value="one-way">单向 · 0°</option><option value="two-way">双向 · 0° / 180°</option><option value="quarter">允许横纹 · 每 90°</option></select></label>
+<label>布纹基准<select id="marker-grain"></select></label><label id="marker-angle-label">原图布纹角度 °<input id="marker-angle" type="number" step="any" value="90"></label>
+<button id="marker-remove-item" class="danger">移除此项</button>
+</div>
+<div class="pair"><button id="marker-auto" class="primary">自动排料</button><button id="marker-cancel" disabled>停止搜索</button></div>
+<div class="pair"><button id="marker-validate">核验当前位置</button><button id="marker-fit">适合排料图</button></div>
+<div id="marker-status" role="status" aria-live="polite">选择裁片开始排料。</div>
+<label>手动放置 / 调整实例<select id="marker-instance"></select></label>
+<div id="marker-placement-fields" hidden>
+<div class="pair"><label>左下 X mm<input id="marker-x" type="number" step=".001"></label><label>左下 Y mm<input id="marker-y" type="number" step=".001"></label></div>
+<label>相对布纹转角<select id="marker-turn"></select></label>
+<div class="pair"><button id="marker-place">放置 / 更新</button><button id="marker-unplace">移回待排</button></div>
+</div>
+<button id="marker-undo">撤销排料调整</button>
+<p class="muted">可在布幅上拖动裁片。红色表示碰撞或越界。自动搜索不保证最优；未排入不代表无法排入。镜像数量不自动推断成对裁剪或面料正反面。</p>
+<button id="marker-save" class="primary">保存排料方案</button><button id="marker-delete" class="danger" hidden>删除方案</button>
+<p class="muted">保存方案后仍需点击顶部“保存工程”。更改基码会按原位置重新核验，必要时重新排料。</p>
+<div class="pair"><button id="marker-export-project" disabled>排料工程</button><button id="marker-export-dxf" disabled>裁剪 DXF</button></div>
+<button id="marker-export-layout-dxf" disabled>排料图形 DXF · 含源曲线</button><p class="muted">裁剪 DXF 使用已核验的折线边界；排料图形 DXF 保留各裁片的全部图元，遵循下方曲线格式设置。</p>
+<button class="dxf-settings-link" data-dxf-settings>DXF 曲线格式设置</button>
+<button id="marker-report" disabled>排料核验报告</button>
+<p class="muted">排料工程是独立静态几何。DXF 的 CUT_BOUNDARY 为指定裁剪边界，FABRIC_BORDER 为布幅框，MARKER_LABEL 为标签；不编码裁床工艺。</p>
+</section>
+<section id="grading-panel">
+  <div class="section-heading">点放码 <span>基码 → 多尺码</span></div>
+  <label>已保存方案<select id="grade-saved"><option value="">未选择方案</option></select></label>
+  <button id="grade-create">用当前所选建立方案</button>
+  <p class="muted">先选基码裁片或多片，再建立方案。关联缝份和刀口随各尺码基准重算；不会缩放缝份宽度。</p>
+  <div id="grade-controls" hidden>
+    <label>方案名称<input id="grade-name" maxlength="200"></label>
+    <label>基码名称<input id="grade-base-size" maxlength="50" value="M"></label>
+    <details><summary>目标尺码与档数</summary><div id="grade-sizes"></div><div class="pair"><label>新尺码<input id="grade-new-size" maxlength="50" placeholder="XL"></label><label>相对基码档数<input id="grade-new-step" type="number" step="any" value="2"></label></div><button id="grade-add-size">添加尺码</button><p class="muted">档数只用于“按档差填表”；改变档数不改已输入的 X/Y 位移。新尺码的已设规则先填 0，请逐点确认。</p></details>
+    <label>未设规则的点<select id="grade-interpolation"><option value="interpolate">沿节点 / 控制多边形插值</option><option value="fixed">保持基码坐标</option></select></label>
+    <p class="muted">插值模式：两放码点间按基码折线或控制多边形距离分配位移，闭合图元循环插值；开放端外沿用最近规则。只有一个规则时整条图元平移。零增量规则可固定点位。</p>
+    <label>当前基准图元<select id="grade-entity"></select></label>
+    <div class="pair"><label>节点 / 控制点序号<input id="grade-point" type="number" min="1" step="1" value="1"></label><button id="grade-locate-point">定位此图元</button></div>
+    <p id="grade-point-info" class="muted"></p>
+    <div id="grade-deltas"></div>
+    <p class="muted">表中为各码相对基码的绝对位移 mm：X 向右、Y 向上。编辑任一格即为此点建立规则；样条使用控制点，不是显示采样点。</p>
+    <div class="pair"><label>每档 ΔX mm<input id="grade-step-x" type="number" step="any" value="0"></label><label>每档 ΔY mm<input id="grade-step-y" type="number" step="any" value="0"></label></div>
+    <button id="grade-fill-step">按档差填入此点</button>
+    <div class="pair"><button id="grade-fix-point">此点全码归零</button><button id="grade-remove-rule">移除此点规则</button></div>
+    <details><summary>相邻线条的同位端点</summary><label>同位容差 mm<input id="grade-coincident-tolerance" type="number" min="0" max="1" step=".001" value=".01"></label><p id="grade-coincident-list" class="muted"></p><button id="grade-copy-coincident">将此点规则复制到这些点</button><p class="muted">仅列出方案内相近的折线节点和样条端点；复制保留原间隙，不移动基码。请确认这些点确实对应。</p></details>
+    <div id="grade-rule-list"></div>
+    <div class="pair"><button id="grade-preview" class="primary">预览各尺码</button><button id="grade-fit" disabled>定位叠码</button></div>
+    <label class="grade-check"><input id="grade-show" type="checkbox" checked> 显示放码预览</label>
+    <label class="grade-check"><input id="grade-show-text" type="checkbox"> 预览各码文字</label>
+    <label>画布显示<select id="grade-view"><option value="all">全部尺码叠码</option></select></label>
+    <p id="grade-status" class="muted" role="status"></p><div id="grade-results"></div>
+    <button id="grade-save" class="primary">保存放码方案</button>
+    <label>导出目标尺码<select id="grade-export-size"></select></label>
+    <div class="pair"><button id="grade-export-project" disabled>导出此码工程</button><button id="grade-export-dxf" disabled>导出此码 DXF</button></div>
+    <button class="dxf-settings-link" data-dxf-settings>DXF 曲线格式设置</button>
+    <div class="pair"><button id="grade-export-all" disabled>多尺码分层 DXF</button><button id="grade-report" disabled>导出放码报告</button></div>
+    <button id="grade-delete" class="danger" hidden>删除方案，保留基码</button>
+    <p class="muted">方案随 .zycad 保存；尺码输出为独立工程。轮廓检查和对缝偏差需人工核对；生成失败的尺码不能导出。当前不读取 ET 的原生放码规则，也不输出 AAMA/ASTM 放码语义。</p>
+  </div>
+</section>
+<footer>实验版本 · PRJ 导入需核对<br>支持旧版尺码选择 · PRJ 写回仍待实现</footer></aside></main>
+<footer class="statusbar"><span id="cursor">X 0.00　Y 0.00 mm</span><span id="selection-status">就绪</span><span id="unit-label">1∶1 几何 · mm</span></footer>
+<dialog id="dxf-settings" aria-labelledby="dxf-settings-title"><h2 id="dxf-settings-title">DXF 导出设置</h2><p>基码、放码和排料共用此设置。文件声明毫米单位。</p>
+<label>曲线输出<select id="dxf-mode"><option value="native">原生样条 · 保留曲线控制点</option><option value="polyline">兼容折线 · 面向不支持样条的软件</option></select></label>
+<label id="dxf-tolerance-field" hidden>折线采样偏差 mm<input id="dxf-tolerance" type="number" min=".001" max=".5" step=".001" value=".01"></label>
+<p>原生模式输出二次、三次 SPLINE。兼容模式重新采样曲线；偏差越小，节点越多。达到节点上限会停止导出。</p>
+<p>DXF 用于几何交换。源文字与图层保留；裁片归属、缝份关联和放码规则请另存工程文件。</p>
+<div class="pair"><button id="dxf-settings-cancel">取消</button><button id="dxf-settings-apply" class="primary">使用此设置</button></div></dialog>
+<dialog id="recovery-dialog" aria-labelledby="recovery-title">
+<div class="recovery-heading"><h2 id="recovery-title">本机恢复</h2><button id="recovery-close" aria-label="关闭本机恢复">关闭</button></div>
+<p>编辑后自动在此浏览器保留工程和绘图草稿。记录留在本机，不上传服务器。打开记录会生成独立副本，不覆盖其他标签页。</p>
+<div class="recovery-controls"><label><input id="recovery-enabled" type="checkbox" checked>自动保留本机恢复记录</label><button id="recovery-retry">立即写入 / 重试</button></div>
+<p id="recovery-status" role="status"></p><p id="recovery-error" role="alert"></p><div id="recovery-list"></div>
+<p class="muted">最多保留最近 10 份记录、合计 80 MiB，单份不超过 20 MiB；超限时淘汰旧记录。关闭自动保留会保留已有记录，可逐条删除。恢复包含已应用的编辑、未结束的绘图节点和数值输入，不含撤销历史及其他面板中尚未应用的预览。</p>
+<p class="muted">编辑停止约 0.75 秒后写入。意外退出前尚未完成的写入可能丢失，浏览器清理数据也会移除记录。请定期使用「保存工程」下载文件。</p>
+</dialog>
+<input id="file" type="file" accept=".prj,.dxf,.json,.zycad" hidden>
+<script type="module" src="app.js"></script>
+</body></html>

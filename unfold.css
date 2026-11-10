@@ -1,0 +1,9 @@
+#unfold-panel>label{margin-top:9px}
+#unfold-panel .pair button{padding:8px 3px;font-size:11px}
+#unfold-panel .unfold-check{display:flex;gap:7px;align-items:flex-start;line-height:1.6}
+#unfold-panel .unfold-check input{width:auto;margin-top:4px}
+#unfold-panel button.active{background:#e2eee7;border-color:#5b8d76}
+#unfold-status{font-size:11px;line-height:1.8;overflow-wrap:anywhere}
+#unfold-status p{margin:8px 0}
+#unfold-status .unfold-warning{color:#a24724}
+#unfold-apply,#unfold-demo{width:100%}

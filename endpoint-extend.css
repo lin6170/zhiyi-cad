@@ -1,0 +1,13 @@
+#extend-panel label{margin-top:9px}
+#extend-panel .pair button{white-space:normal;padding:8px 4px}
+#extend-panel .extend-check{display:flex;align-items:center;gap:7px;line-height:1.6}
+#extend-panel .extend-check input{width:auto;margin:0}
+#extend-panel .active{border-color:#377f6a;background:#e3efe9;color:#205e49}
+#extend-target-name{overflow-wrap:anywhere}
+#extend-references{max-height:180px;overflow:auto}
+.extend-reference-row{display:flex;gap:6px;align-items:center;font-size:11px;padding:5px 0;border-bottom:1px solid #edf0e9}
+.extend-reference-row span{flex:1;min-width:0;overflow-wrap:anywhere}
+.extend-reference-row button{padding:3px 9px}
+#extend-status{font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+#extend-status p{margin:8px 0}
+#extend-apply{width:100%;white-space:normal}

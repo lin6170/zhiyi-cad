@@ -1,0 +1,12 @@
+#line-edit-panel label{margin-top:9px}
+#line-edit-panel .line-check{display:flex;align-items:center;gap:7px;line-height:1.6}
+#line-edit-panel .line-check input{width:auto;margin:0}
+#line-sources{max-height:255px;overflow:auto}
+.line-source-row{display:grid;grid-template-columns:minmax(0,1fr) 29px 29px 29px;gap:5px;align-items:center;padding:8px 0;border-bottom:1px solid #edf0e9}
+.line-source-row span{grid-column:1 / -1;overflow-wrap:anywhere;font-size:11px}
+.line-source-row select{font-size:11px;padding:6px 3px}
+.line-source-row button{padding:6px 2px}
+#line-status{font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+#line-status p{margin:8px 0}
+#line-status .muted{color:#6c7f6c}
+#line-apply{width:100%;white-space:normal}

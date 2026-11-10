@@ -1,0 +1,9 @@
+#spread-panel>label{margin-top:9px}
+#spread-panel .pair button{padding:8px 4px;font-size:11px}
+#spread-panel .spread-check{display:flex;gap:7px;align-items:flex-start;line-height:1.6}
+#spread-panel .spread-check input{width:auto;margin-top:4px}
+#spread-panel button.active{background:#e2eee7;border-color:#5b8d76}
+#spread-status{font-size:11px;line-height:1.8;overflow-wrap:anywhere}
+#spread-status p{margin:8px 0}
+#spread-status .spread-warning{color:#a24724}
+#spread-apply{width:100%}

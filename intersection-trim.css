@@ -1,0 +1,15 @@
+#trim-panel label{margin-top:9px}
+#trim-panel .pair button{white-space:normal;padding:8px 4px}
+#trim-panel .trim-check{display:flex;align-items:center;gap:7px;line-height:1.6}
+#trim-panel .trim-check input{width:auto;margin:0}
+#trim-panel .active{border-color:#377f6a;background:#e3efe9;color:#205e49}
+#trim-target-name{overflow-wrap:anywhere}
+#trim-cutters,#trim-regions{max-height:180px;overflow:auto}
+.trim-cutter-row{display:flex;gap:6px;align-items:center;font-size:11px;padding:5px 0;border-bottom:1px solid #edf0e9}
+.trim-cutter-row span{flex:1;min-width:0;overflow-wrap:anywhere}
+.trim-cutter-row button{padding:3px 9px}
+#trim-regions{display:grid;gap:5px;margin-top:9px}
+#trim-regions button{text-align:left;white-space:normal;font-size:11px}
+#trim-status{font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+#trim-status p{margin:8px 0}
+#trim-apply{width:100%;white-space:normal}

@@ -1,0 +1,12 @@
+#merge-panel>label{margin-top:9px}
+#merge-panel .pair button{padding:8px 3px;font-size:11px}
+#merge-panel .merge-check{display:flex;gap:7px;align-items:flex-start;line-height:1.6}
+#merge-panel .merge-check input{width:auto;margin-top:4px}
+#merge-panel button.active{background:#e2eee7;border-color:#5b8d76}
+#merge-status{font-size:11px;line-height:1.8;overflow-wrap:anywhere}
+#merge-status p{margin:8px 0}
+#merge-status .merge-warning{color:#a24724}
+#merge-panel .merge-source{padding:10px;margin:9px 0;border:1px solid #e1e6dd;border-radius:7px}
+#merge-panel .merge-source>label{margin-top:8px}
+#merge-panel .merge-source button{width:100%;white-space:normal;font-size:11px;padding:8px 4px;line-height:1.5}
+#merge-apply,#merge-demo,#merge-return{width:100%}

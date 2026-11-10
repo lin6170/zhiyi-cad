@@ -1,0 +1,12 @@
+#position-panel label{margin-top:9px}
+#position-panel .position-check{display:flex;gap:7px;align-items:flex-start;line-height:1.6}
+#position-panel .position-check input{width:auto;margin-top:4px}
+.position-point{border:1px solid #dce4d9;border-radius:6px;margin:9px 0;padding:8px}
+.position-point-head{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.position-point-head button{padding:4px 10px}
+.position-point-head button.active{background:#e2eee7;border-color:#5b8d76}
+#position-count,#position-status{overflow-wrap:anywhere}
+#position-status{font-size:12px;line-height:1.7}
+#position-status p{margin:8px 0}
+#position-status .position-warning{color:#a24724}
+#position-apply{width:100%}
