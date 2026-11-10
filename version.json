@@ -1,6 +1,6 @@
 {
-  "version": 37,
-  "base_publication_commit": "99481906616b0637f627639bfbe44b4b329a91fd",
+  "version": 38,
+  "base_publication_commit": "9cf0b8932e67bb9a60f3a747baaf1cc9753a083a",
   "hosting": "GitHub Pages",
-  "change": "PRJ 独立直线单端点回存：定位、坐标预览、守护检查与独立下载"
+  "change": "顶部保存 PRJ 入口：回存范围、当前修改检查和工程保存选项"
 }

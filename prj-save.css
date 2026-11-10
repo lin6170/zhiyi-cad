@@ -1,0 +1,10 @@
+#prj-save-dialog{box-sizing:border-box;width:620px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);overflow:auto;border:1px solid #d7e1d5;border-radius:12px;padding:24px;color:#344c43}
+#prj-save-dialog::backdrop{background:#162f2859}
+#prj-save-dialog h2{font-size:20px;margin:0 0 14px}
+#prj-save-dialog h3{font-size:15px;margin:0 0 8px}
+#prj-save-dialog p{line-height:1.6;overflow-wrap:anywhere;margin:8px 0}
+#prj-save-dialog section{border:1px solid #d7e1d5;border-radius:8px;padding:14px;margin:14px 0}
+#prj-save-dialog .prj-save-status{font-weight:600}
+#prj-save-dialog .pair{display:flex;flex-wrap:wrap;gap:8px}
+#prj-save-dialog .pair button{flex:1;min-width:160px}
+#save-prj{white-space:nowrap}
