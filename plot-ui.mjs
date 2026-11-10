@@ -13,10 +13,16 @@ export function createPlotPanel({getProject,getSelection,getTool,commit,setTool,
   function frame(){return [{type:'polyline',points:[{x:0,y:0},{x:preview?.paperWidth||210,y:preview?.paperHeight||297}]}];}
   function fitPage(){if(preview){setTool('plot');fit(frame());}}
   function updateControls(){
-    for(const id of ['plot-fit','plot-print','plot-html','plot-svg','plot-page-svg','plot-report','plot-page'])$(id).disabled=!preview;
+    for(const id of ['plot-fit','plot-print','plot-html','plot-svg','plot-page-svg','plot-report','plot-page','plot-first-drawing'])$(id).disabled=!preview;
+    $('plot-show-calibration').disabled=!preview||!preview.pages.some(p=>p.kind==='calibration');
     $('plot-prev').disabled=!preview||pageIndex<=0;$('plot-next').disabled=!preview||pageIndex>=preview.pages.length-1;
     $('plot-paper-fields').hidden=settings.mode==='full';$('plot-selection-info').textContent=settings.source==='selection'?'已记录 '+settings.selectionIds.length+' 个图元；改变选区后可重新点击“用当前选区”。':'纸样位置、已保存尺码或排料方案直接作为出图来源。';
-    const page=$('plot-page');page.replaceChildren();if(preview)for(let i=0;i<preview.pages.length;i++)page.add(new Option((i+1)+' / '+preview.pages.length+' · '+preview.pages[i].label,i));page.value=pageIndex;
+    const page=$('plot-page');page.replaceChildren();if(preview)for(let i=0;i<preview.pages.length;i++)page.add(new Option('第 '+(i+1)+' / '+preview.pages.length+' 页 · '+(preview.pages[i].kind==='calibration'?'校准专页（不含纸样）':'纸样 '+preview.pages[i].label),i));page.value=pageIndex;
+    const currentPage=preview?.pages[pageIndex],calibration=currentPage?.kind==='calibration';
+    $('plot-current-page').textContent=!currentPage?'预览生成后，默认显示第一张纸样页。':calibration?'当前是比例校准页，不含纸样。点击“查看纸样”切换。':'当前：纸样 '+currentPage.label+' · 文件第 '+(pageIndex+1)+' / '+preview.pages.length+' 页';
+    $('plot-current-page').dataset.kind=currentPage?.kind||'none';
+    $('plot-page-svg').textContent=calibration?'仅校准页 SVG':'当前纸样页 SVG';
+    $('plot-page-svg').title=calibration?'只导出 100 mm 校准方框，不包含纸样；完整纸样请用“完整纸样 SVG”。':'只导出当前预览页；所有纸样请用“完整纸样 SVG”。';
     const map=$('plot-map');map.replaceChildren();if(preview){map.style.gridTemplateColumns='repeat('+preview.cols+',minmax(40px,1fr))';for(const [i,p] of preview.pages.entries()){const button=document.createElement('button');button.textContent=p.label;button.title='第 '+(i+1)+' 页';button.classList.toggle('active',i===pageIndex);if(p.kind==='calibration'){button.style.gridColumn='1 / -1';button.style.textAlign='left';}button.onclick=()=>{pageIndex=i;updateControls();render();};map.append(button);}}
   }
   function refreshLayers(){
@@ -35,8 +41,8 @@ export function createPlotPanel({getProject,getSelection,getTool,commit,setTool,
   }
   function compute(){
     try{
-      preview=preparePlot(getProject(),settings);settings=preview.config;pageIndex=Math.min(pageIndex,preview.pages.length-1);pageCache.clear();error='';
-      $('plot-status').dataset.status='ready';const report=plotReport(preview);$('plot-status').textContent='1:1 · '+preview.pages.length+' 页（'+preview.rows+' 行 × '+preview.cols+' 列'+(settings.calibration?' + 校准页':'')+'）\n纸张 '+preview.paperWidth.toFixed(3)+' × '+preview.paperHeight.toFixed(3)+' mm\n图形 '+preview.box.width.toFixed(3)+' × '+preview.box.height.toFixed(3)+' mm\n'+report.entityCount+' 个图元 · '+report.nativeCurveCount+' 条原生曲线 · '+report.textCount+' 项源文字'+(preview.source.warnings.length?'\n来源有 '+preview.source.warnings.length+' 条说明，详见出图报告。':'');
+      preview=preparePlot(getProject(),settings);settings=preview.config;pageIndex=preview.pages.findIndex(p=>p.kind==='drawing');pageCache.clear();error='';
+      $('plot-status').dataset.status='ready';const report=plotReport(preview);$('plot-status').textContent='1:1 · 纸样 '+(preview.rows*preview.cols)+' 页'+(settings.calibration?' + 校准 1 页':'')+'，共 '+preview.pages.length+' 页\n纸样布局 '+preview.rows+' 行 × '+preview.cols+' 列\n纸张 '+preview.paperWidth.toFixed(3)+' × '+preview.paperHeight.toFixed(3)+' mm\n图形 '+preview.box.width.toFixed(3)+' × '+preview.box.height.toFixed(3)+' mm\n'+report.entityCount+' 个图元 · '+report.nativeCurveCount+' 条原生曲线 · '+report.textCount+' 项源文字'+(preview.source.warnings.length?'\n来源有 '+preview.source.warnings.length+' 条说明，详见出图报告。':'');
       refresh();fitPage();
     }catch(e){preview=null;pageCache.clear();error='出图失败：'+e.message;refresh();render();throw e;}
   }
@@ -47,6 +53,7 @@ export function createPlotPanel({getProject,getSelection,getTool,commit,setTool,
   $('plot-preview').onclick=action(compute);$('plot-fit').onclick=fitPage;
   $('plot-page').onchange=()=>{pageIndex=Number($('plot-page').value);updateControls();render();};
   $('plot-prev').onclick=()=>{pageIndex=Math.max(0,pageIndex-1);updateControls();render();};$('plot-next').onclick=()=>{pageIndex=Math.min(preview.pages.length-1,pageIndex+1);updateControls();render();};
+  for(const [id,kind] of [['plot-first-drawing','drawing'],['plot-show-calibration','calibration']])$(id).onclick=()=>{if(!preview)return;const index=preview.pages.findIndex(p=>p.kind===kind);if(index<0)return;pageIndex=index;updateControls();fitPage();};
   function current(){if(!preview||stamp!==plotSourceStamp(getProject()))throw new Error('请重新生成当前纸样的出图预览');return preview;}
   const filename=()=>current().source.name.replace(/[<>:"/\\|?*]/g,'_')+'-1比1';
   $('plot-print').onclick=action(()=>{const html=plotPrintHtml(current()),popup=window.open('about:blank','_blank');if(!popup)throw new Error('打印窗口被浏览器阻止，可允许弹窗或保存打印文件后打开');popup.opener=null;popup.document.open();popup.document.write(html);popup.document.close();notify('已打开静态打印快照。请在新页选择打印或保存 PDF。');});

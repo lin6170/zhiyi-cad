@@ -291,11 +291,14 @@
 <details><summary>选择出图图层</summary><p class="muted">从当前来源读取图层；隐藏图层会改变出图范围。</p><div id="plot-layers"></div></details>
 <div class="pair"><button id="plot-preview" class="primary">生成预览</button><button id="plot-fit" disabled>适合当前页</button></div>
 <div id="plot-status" role="status" aria-live="polite">先生成预览，再打印或导出。</div>
+<p id="plot-current-page" role="status" aria-live="polite">预览生成后，默认显示第一张纸样页。</p>
+<div class="pair"><button id="plot-first-drawing" disabled>查看纸样</button><button id="plot-show-calibration" disabled>查看校准页</button></div>
 <div class="pair"><button id="plot-prev" disabled>上一页</button><button id="plot-next" disabled>下一页</button></div>
 <select id="plot-page" aria-label="出图预览页码" disabled></select><div id="plot-map" aria-label="分页位置图"></div>
-<button id="plot-print" class="primary" disabled>打印 / 保存 PDF</button>
-<div class="pair"><button id="plot-html" disabled>保存打印文件</button><button id="plot-svg" disabled>整幅 SVG</button></div>
-<div class="pair"><button id="plot-page-svg" disabled>当前页 SVG</button><button id="plot-report" disabled>出图报告</button></div>
+<button id="plot-print" class="primary" disabled>打印全部 / 保存 PDF</button>
+<div class="pair"><button id="plot-html" disabled>全部页面 HTML</button><button id="plot-svg" disabled>完整纸样 SVG</button></div>
+<div class="pair"><button id="plot-page-svg" disabled>当前纸样页 SVG</button><button id="plot-report" disabled>出图报告</button></div>
+<p class="muted">当前页 SVG 只含预览中的这一页。导出所有纸样请用“完整纸样 SVG”；打印文件包含全部分页。</p>
 <button id="plot-save-settings">保存出图设置到工程</button>
 <p class="muted">打印文件可离线打开。打印时选相同纸张、100% 或实际大小，关闭页眉页脚；先量校准页的 X/Y 两方向。保存设置后仍需保存工程文件。</p>
 <p class="muted">分页从左到右、从上到下。裁去后一页内容框左/上方空白边，叠放重叠区并对齐十字。打印快照不会随之后的纸样修改自动更新。</p>
