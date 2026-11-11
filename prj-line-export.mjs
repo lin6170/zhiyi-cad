@@ -1,5 +1,7 @@
 import { parsePrj } from './prj-parser.mjs';
 import { validateProject } from './geometry.mjs';
+import {decodePrjStorage,encodedV5Signature} from './prj-storage.mjs';
+import {insertV5Lines} from './prj-v5-line-insert.mjs';
 
 const signature = [0x51, 0x7f, 1, 1, 0, 0, 0, 0x40];
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -117,9 +119,10 @@ function insertLines(original, parsed, additions, identityStart) {
 
 /** Append standalone straight lines; preserve original sections and unknown bytes. */
 export function createPrjLineExportSession(input, filename = 'ET project.prj', { identityStart = Math.floor(Date.now() / 1000) } = {}) {
-  const original = copyBytes(input);
-  if (!signature.every((byte, index) => original[index] === byte)) throw new Error('此 PRJ 布局尚不支持新增直线回存。');
-  const parsed = parsePrj(original, filename);
+  const storedOriginal = copyBytes(input),v5=encodedV5Signature.every((b,i)=>storedOriginal[i]===b);
+  if (!v5&&!signature.every((byte, index) => storedOriginal[index] === byte)) throw new Error('此 PRJ 布局尚不支持新增直线回存。');
+  const original=v5?decodePrjStorage(storedOriginal):storedOriginal;
+  const parsed = parsePrj(storedOriginal, filename);
   const baseline = clone(validateProject({ format: 'zhiyi-cad', version: 6, units: 'unknown', seamAllowances: [], notches: [], seamChecks: [], ...clone(parsed) }));
   const previews = new WeakMap();
   return Object.freeze({
@@ -149,9 +152,9 @@ export function createPrjLineExportSession(input, filename = 'ET project.prj', {
         return { entityId: entity.id, name: entity.name, requested, stored,
           roundingError: Math.max(...stored.map((point, index) => Math.hypot(point.x - requested[index].x, point.y - requested[index].y))) };
       });
-      const { candidate, sourceIdStart } = insertLines(original, parsed, additions, identityStart);
+      const { candidate, sourceIdStart } = v5?insertV5Lines(original,parsed,additions,unusedIdentityRange(original,additions.length*3,identityStart)):insertLines(original, parsed, additions, identityStart);
       const plan = freeze({ operation: 'append_prj_standalone_lines', addedLines: additions.length, additions, sourceIdStart,
-        originalByteLength: original.length, byteLength: candidate.length, addedNodes: additions.length * 2,
+        originalByteLength: storedOriginal.length, byteLength: candidate.length, addedNodes: additions.length * 2,
         units: '原始单位（物理比例未确认）', nativeEtValidation: 'pending',
         checks: { reparsed: true, originalDecodedDataPreserved: true, originalSectionsRetained: true } });
       previews.set(plan, { snapshot: JSON.stringify(project), candidate });

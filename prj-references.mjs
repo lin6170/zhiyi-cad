@@ -3,10 +3,12 @@
  * The remaining curve trailer is preserved as an opaque range: it is not an
  * editable seam allowance or grading rule until its native behavior is verified.
  */
+import {readV5References} from './prj-v5-layout.mjs';
 export function readPrjCurveReferences(input, parsed) {
   const bytes = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : null;
   const fail = message => { throw new Error('PRJ 曲线引用：' + message); };
   if (!bytes || bytes.length < 100 || bytes.length > 16 * 1024 * 1024) fail('原始字节范围无效。');
+  if(parsed?.metadata?.layout==='native-v5-7248')return readV5References(bytes,parsed);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const metadata = parsed?.metadata;
   if (!metadata || !Array.isArray(metadata.nodes) || !Array.isArray(parsed.entities)) fail('缺少原始节点或曲线信息。');

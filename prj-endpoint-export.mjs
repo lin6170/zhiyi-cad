@@ -1,6 +1,8 @@
 import { parsePrj } from './prj-parser.mjs';
 import { validateProject } from './geometry.mjs';
 import { readPrjCurveReferences as referenceRecords } from './prj-references.mjs';
+import {decodePrjStorage,encodePrjStorage,encodedV5Signature} from './prj-storage.mjs';
+import {ordinaryV5Tail,ordinaryV5Node,v5TextStart} from './prj-v5-layout.mjs';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const signature = [0x51, 0x7f, 1, 1, 0, 0, 0, 0x40];
@@ -32,7 +34,8 @@ function inspectLine(bytes,parsed,records,record) {
   if(source.recordKind!==2||entity.points.length!==2||entity.curve||entity.closed)return fail('当前仅支持开放独立直线，不支持曲线或闭合线。');
   if(parsed.groups.some(g=>g.entityIds.includes(entity.id)))return fail('这条线属于裁片或组合，关联修改尚未验证。');
   if(record.direct.length!==2||new Set(record.direct).size!==2||record.secondary.length)return fail('这条线含共享点或额外点引用，暂不支持。');
-  if(record.end-record.tailOffset!==plainTail.length||!plainTail.every((b,i)=>bytes[record.tailOffset+i]===b))return fail('这条线包含尚未验证的附加记录。');
+  const v5=parsed.metadata.layout==='native-v5-7248';
+  if(v5?!ordinaryV5Tail(bytes,record):(record.end-record.tailOffset!==plainTail.length||!plainTail.every((b,i)=>bytes[record.tailOffset+i]===b)))return fail('这条线包含尚未验证的附加记录。');
   if(source.flags.some(Boolean)||pointEqual(...entity.points))return fail('线条标志或端点结构尚不支持。');
   if(nodes.filter(n=>n.ownerIndex===record.index).length!==2)return fail('这条线还有附加节点，暂不支持。');
   const endpoints=[];
@@ -40,6 +43,7 @@ function inspectLine(bytes,parsed,records,record) {
     const nodeIndex=record.direct[i],node=nodes[nodeIndex-1],pointOffset=source.offset+34+i*12;
     if(!node||node.recordType!==6||node.ownerIndex!==record.index||node.flags.some(Boolean)||!pointEqual(entity.points[i],node))return fail('线条端点与节点记录不一致。');
     if(bytes.subarray(node.offset+30,node.offset+34).some(Boolean))return fail('节点含尚未验证的附加字段。');
+    if(v5&&!ordinaryV5Node(bytes,nodes,nodeIndex,v5TextStart(parsed)))return fail('新版节点含尚未验证的扩展字段。');
     if(records.some(r=>r!==record&&(r.direct.includes(nodeIndex)||r.secondary.includes(nodeIndex))))return fail('端点被其他线条引用，暂不支持。');
     if(parsed.groups.some(g=>g.source?.ownedNodes?.indices.includes(nodeIndex)))return fail('端点属于裁片，暂不支持。');
     const copies=coordinateCopies(bytes,pointOffset);
@@ -51,9 +55,10 @@ function inspectLine(bytes,parsed,records,record) {
 
 /** Experimental isolated-line writer. Does not infer unknown links or physical units. */
 export function createPrjEndpointExportSession(input,filename='ET project.prj') {
-  const original=copyBytes(input);
-  if(!signature.every((b,i)=>original[i]===b))throw new Error('此 PRJ 布局尚不支持端点回存。');
-  const parsed=parsePrj(original,filename),records=referenceRecords(original,parsed);
+  const storedOriginal=copyBytes(input),v5=encodedV5Signature.every((b,i)=>storedOriginal[i]===b);
+  if(!v5&&!signature.every((b,i)=>storedOriginal[i]===b))throw new Error('此 PRJ 布局尚不支持端点回存。');
+  const original=v5?decodePrjStorage(storedOriginal):storedOriginal;
+  const parsed=parsePrj(storedOriginal,filename),records=referenceRecords(original,parsed);
   const baseline=clone(validateProject({format:'zhiyi-cad',version:6,units:'unknown',seamAllowances:[],notches:[],seamChecks:[],...clone(parsed)}));
   const inspections=new Map(records.map(r=>[r.entity.id,freeze(inspectLine(original,parsed,records,r))]));
   const previews=new WeakMap();
@@ -90,7 +95,8 @@ export function createPrjEndpointExportSession(input,filename='ET project.prj') 
       if(changes.length!==1)throw new Error(changes.length?'当前一次只回存一条独立直线的一个端点。':'没有需要回存的端点修改。');
       const change=changes[0],candidate=original.slice(),view=new DataView(candidate.buffer);
       for(const offset of [change.pointOffset,change.nodeOffset]){view.setFloat32(offset,change.stored.x,true);view.setFloat32(offset+4,change.stored.y,true);}
-      const reparsed=parsePrj(candidate,filename),expectedParsed=clone(parsed);
+      const output=v5?encodePrjStorage(candidate):candidate;
+      const reparsed=parsePrj(output,filename),expectedParsed=clone(parsed);
       expectedParsed.entities.find(e=>e.id===change.entityId).points[change.endpointIndex]={...change.stored};
       Object.assign(expectedParsed.metadata.nodes[change.nodeIndex-1],change.stored);
       if(canonical(reparsed)!==canonical(expectedParsed))throw new Error('写回后出现其他解析变化，已拒绝导出。');
@@ -99,8 +105,8 @@ export function createPrjEndpointExportSession(input,filename='ET project.prj') 
       if(!reinspection.eligible)throw new Error('修改后端点可能建立未验证的关联：'+reinspection.reason);
       const copies=coordinateCopies(candidate,change.pointOffset);
       if(copies.length!==2||!copies.includes(change.nodeOffset))throw new Error('新端点与其他记录重合，暂不支持回存。');
-      const plan=freeze({operation:'replace_prj_isolated_endpoint',changes,units:'原始单位（物理比例未确认）',byteLength:original.length,nativeEtValidation:'pending'});
-      previews.set(plan,{snapshot:JSON.stringify(project),candidate});return plan;
+      const plan=freeze({operation:'replace_prj_isolated_endpoint',changes,units:'原始单位（物理比例未确认）',byteLength:output.length,nativeEtValidation:'pending'});
+      previews.set(plan,{snapshot:JSON.stringify(project),candidate:output});return plan;
     },
     export(project,plan){const stored=previews.get(plan);if(!stored||stored.snapshot!==JSON.stringify(project))throw new Error('工程在预览后已变化，请重新预览。');return stored.candidate.slice();},
   });

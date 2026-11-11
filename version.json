@@ -1,8 +1,8 @@
 {
-  "version": 39,
-  "base_publication_commit": "ab405ae3411f1e0d0c8f82acf20b02760955d3fa",
+  "version": 40,
+  "base_publication_commit": "e192e614f47b55b82c041b7fc1f0535d1c8f97f2",
   "hosting": "GitHub Pages",
-  "change": "新增独立直线 PRJ 回存；读取已验证的 ET v5 回存文件",
-  "native_validation": "One tested legacy PRJ: browser-added lines, ET continued drawing/save/reopen, independent no-edit control.",
-  "limits": "v5 import supports engineering save only; no v5 PRJ writeback or full ET parity."
+  "change": "ET v5 独立直线单端点修改与新增 PRJ 回存",
+  "native_validation": "Actual browser export; native ET open, continued drawing, save, reopen, second save/reopen; structural and original-byte comparison passed.",
+  "limits": "Verified single-size v5 standalone straight lines only. Separate endpoint/addition exports. No v5 text, associated contours, spline writeback or full ET parity."
 }

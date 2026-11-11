@@ -20,6 +20,17 @@ export function prjMd5(bytes){
   const digest=new Uint8Array(16),out=new DataView(digest.buffer);state.forEach((v,i)=>out.setUint32(i*4,v,true));return digest;
 }
 export const encodedV5Signature=[0x48,0x01,0x00,0xa0];
+/** Inverse of the verified block envelope; ambiguous digest overlap is rejected. */
+export function encodePrjStorage(payload){
+  if(!(payload instanceof Uint8Array)||payload.length<496||payload.length+16>16*1024*1024||
+      ![0x48,0x72,1,1,0,0,0xa0,0x40].every((v,i)=>payload[i]===v))throw new Error('新版 PRJ：回存数据范围或版本不受支持。');
+  if(payload.length%496>480)throw new Error('新版 PRJ：此长度的末块布局尚未验证，请调整新增线数量后重试。');
+  const output=new Uint8Array(payload.length+16);output.set(payload);
+  for(let o=0;o+496<=payload.length;o+=496)for(let i=0;i<248;i++){
+    output[o+i]=payload[o+2*i];output[o+248+i]=payload[o+2*i+1];
+  }
+  output.set(prjMd5(output.subarray(0,payload.length)),payload.length);return output;
+}
 export function decodePrjStorage(bytes){
   const fail=message=>{throw new Error('新版 PRJ：'+message);};
   if(!(bytes instanceof Uint8Array)||bytes.length<512||bytes.length>16*1024*1024)fail('文件大小不受支持。');

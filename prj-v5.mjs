@@ -108,10 +108,10 @@ export function parseNativeV5Prj(bytes, filename) {
       const refs=[];
       for(let list=0;list<2;list++){const n=u32(c);require(n<=10000,'曲线点引用数量异常。');c+=4;range(c,n*4);const ids=Array.from({length:n},(_,i)=>u32(c+i*4));c+=n*4;require(ids.every(i=>i>=1&&i<=nodes.length),'曲线点索引越界。');refs.push(ids);}
       require(refs[0].length>=2,'曲线缺少首尾节点引用。');
-      for(let e=0;e<2;e++){const n=nodes[refs[0][e]-1],p=e?record.points.at(-1):record.points[0];require(n.ownerIndex===ci+1 && n.x===p.x && n.y===p.y,'曲线与首尾节点坐标不一致。');}
+      for(let e=0;e<2;e++){const n=nodes[refs[0][e]-1],p=e?record.points.at(-1):record.points[0];require(n.ownerIndex===ci+1 && n.x===p.x && n.y===p.y,`曲线 ${ci+1} 与首尾节点坐标不一致。`);}
       require(c< (records[ci+1]?.offset ?? pieces[0].offset),'曲线记录边界异常。');
       if(ci===records.length-1){
-        require(record.kind===2 && c+36<=pieces[0].offset,'曲线表尾部结构尚未支持。');
+        require([2,23].includes(record.kind) && c+36<=pieces[0].offset,'曲线表尾部结构尚未支持。');
         ranges.push({offset:c+36,length:pieces[0].offset-c-36,scope:'between-curves-and-pieces',structure:'unresolved-v5-auxiliary-records',declaredCount:root.auxiliaryCount});
       }
       Object.assign(record.entity.source,{size:root.name,sizeId:root.id,pointReferences:refs[0],secondaryPointReferences:refs[1]});
@@ -175,18 +175,18 @@ export function parseNativeV5Prj(bytes, filename) {
   const curves=allEntities.filter(e=>[2,4,23].includes(e.source?.recordKind)),stats=prjCurveStats(curves);
   const baseSize=roots.find(r=>r.base)?.name||roots[0].name,unownedCurveIds=variants.flatMap(v=>v.unownedCurveIds);
   return {name:allPieces[0]?.style||filename,entities:allEntities,groups:allGroups,
-    metadata:{format:'ET PRJ experimental',layout:'native-v5-7248',unit:'unknown',sourceFile:filename,encoding:'utf-8',headerStrings,baseSize,style:allPieces[0]?.style||'',compatibility:'experimental-read-only-source',
+    metadata:{format:'ET PRJ experimental',layout:'native-v5-7248',unit:'unknown',sourceFile:filename,encoding:'utf-8',headerStrings,baseSize,style:allPieces[0]?.style||'',compatibility:'experimental-bounded-line-writeback',
       ...stats,declaredCurveCount:curves.length,firstCurveOffset:curves[0].source.offset,lastCurveOffset:curves.at(-1).source.offset,
       parsedTextCount:standaloneTotal+embeddedTotal,declaredStandaloneTextCount:standaloneTotal,parsedStandaloneTextCount:standaloneTotal,parsedEmbeddedTextCount:embeddedTotal,
       declaredPieceCount:allPieces.length,parsedPieceCount:allPieces.length,decodedPieceCount:allGroups.length,declaredPointCount:allNodes.length,parsedPointCount:allNodes.length,
       ownedCurveCount:curves.length-unownedCurveIds.length,unownedCurveCount:unownedCurveIds.length,unownedCurveIds,pieces:allPieces,nodes:allNodes,sizeVariants:variants,unparsedFollowingRanges:ranges},
     warnings:[
-      `新版 v5 PRJ 实验导入：${curves.length} 条主图曲线、${allPieces.length} 份裁片；已核对声明数量、局部索引和曲线首尾节点。当前仅验证单尺码、直线与样条。`,
+      `新版 v5 PRJ 实验导入：${curves.length} 条主图曲线、${allPieces.length} 份裁片；已核对声明数量、局部索引和曲线首尾节点。当前仅验证单尺码、直线、样条与两点连续线。`,
       `文字直接按 UTF-8 从文件读取：${embeddedTotal} 条裁片标签、${standaloneTotal} 条独立文字。标签锚点按居中显示，开关标志和 ET 字体排版仍需核对。`,
       `按原控制点恢复 ${stats.smoothSplineCount} 条样条，${stats.polylineCount} 条多段线按原始顶点保留。${stats.fallbackSplineCount ? stats.fallbackSplineCount+' 条样条未通过重建核对，暂按原拟合点折线显示。' : ''}`,
       ...(stats.endpointNormalizedSplineCount?[`${stats.endpointNormalizedSplineCount} 条样条含完全重复的端点：移除不参与曲线的端部控制项后恢复为可编辑曲线；原控制点与拟合点完整保留。`]:[]),
       '坐标物理单位尚未确认。主变换已核对为单位矩阵；额外变换仅保留为来源记录，未用于修改主图坐标。',
       '尺码仅代表文件内已保存的纸样，不代表已恢复 ET 放码规则。刀口、缝份、标签开关及主图后扩展数据的完整语义仍未恢复；后缀未混入主图。',
-      '当前保存为自有工程格式，不支持写回 PRJ；仍需 ET 原软件核对，不能直接视为生产验证结果。',
+      '保存 PRJ 支持符合条件的独立直线单端点修改，或新增普通独立直线；需分别回存。v5 标注、曲线、连续线及裁片修改请保存 .zycad 工程。有限样本已通过 ET 打开、继续绘图、保存和重开，不代表全部文件已验证。',
     ]};
 }
