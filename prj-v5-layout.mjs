@@ -5,6 +5,7 @@ export function readV5References(bytes,parsed){
   const m=parsed.metadata,roots=m.sizeVariants,ranges=m.unparsedFollowingRanges;
   if(m.layout!=='native-v5-7248'||roots?.length!==1)fail();
   const root=roots[0],end=ranges.find(r=>r.scope==='between-curves-and-pieces')?.offset;
+  if(root.flags===0x01)throw new Error('该 v5 母版变体目前支持导入查看；网页 PRJ 回存尚未验收，请保存工程或通过已验证的 ET 本机任务生成副本。');
   const curves=parsed.entities.filter(e=>[2,4,23].includes(e.source?.recordKind));
   if(!Number.isInteger(end)||end>bytes.length||curves.length!==root.curveCount)fail();
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);

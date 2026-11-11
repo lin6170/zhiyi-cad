@@ -25,7 +25,7 @@ export function parseNativeV5Prj(bytes, filename) {
   for(let i=0;i<3;i++){const s=string(headerCursor);headerStrings.push(s.text);headerCursor=s.next;}
   const roots=[];
   for(let o=100;o+20<=bytes.length;o++) {
-    if(u32(o-8)!==1 || u32(o-4)!==1 || u32(o+4)!==0 || f32(o+11)!==1 || u32(o+15)!==0 || ![0x80,0x81].includes(bytes[o+19])) continue;
+    if(u32(o-8)!==1 || u32(o-4)!==1 || u32(o+4)!==0 || f32(o+11)!==1 || u32(o+15)!==0 || ![0x01,0x80,0x81].includes(bytes[o+19])) continue;
       const s=string(o+20,128);
       if(u32(s.next)!==9)continue;
       require(u32(s.next+4)===0xffffffff,'尚不支持此计数表布局。');
@@ -35,7 +35,7 @@ export function parseNativeV5Prj(bytes, filename) {
       const curveCount=count(6,1280),textCount=count(136,1987),pieceCount=count(115,987);
       require(s.text && nodeCount>=1 && nodeCount<=10000,'尺码点数量无效。');
       range(nodeOffset,34);require([6,7].includes(u32(nodeOffset)),'尺码首个点记录无效。');
-      roots.push({id:`prj-size-${o}`,offset:o,name:s.text,base:bytes[o+19]===0x81,nodeCount,nodeOffset,curveCount,textCount,pieceCount,auxiliaryCount:count(174,1243),tableOffset:table,color:Array.from(bytes.subarray(o+8,o+11))});
+      roots.push({id:`prj-size-${o}`,offset:o,name:s.text,base:(bytes[o+19]&1)===1,flags:bytes[o+19],nodeCount,nodeOffset,curveCount,textCount,pieceCount,auxiliaryCount:count(174,1243),tableOffset:table,color:Array.from(bytes.subarray(o+8,o+11))});
       o=nodeOffset-1;
   }
   require(roots.length===1,'目前只支持已验证的单尺码 v5 结构。');

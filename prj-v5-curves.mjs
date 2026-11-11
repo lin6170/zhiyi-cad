@@ -6,12 +6,16 @@ export function readV5Curve(bytes,offset,index=0,end=bytes.length){
   if(offset<0||offset+100>end||end>bytes.length)return null;
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),u=o=>view.getUint32(o,true);
   if(u(offset+10)===23){
-    // Observed two-point native v5 continuous line: sentinel, count, XYZ,
-    // then YXZ. Larger polylines need independent ordering evidence.
+    // Native v5 continuous lines store XYZ triples in a ten-point cycle.
+    // Checked against native endpoint-node references and regenerated seams.
     if(u(offset+34)!==0xffffffff)return null;
-    const count=u(offset+38);if(count!==2||offset+42+count*12>end)return null;
-    const virtual=new Uint8Array(38+count*12+100);virtual.set(bytes.subarray(offset,offset+34));virtual.set(bytes.subarray(offset+38,offset+42+count*12),34);
-    virtual.set(bytes.subarray(offset+58,offset+62),50);virtual.set(bytes.subarray(offset+54,offset+58),54);
+    const count=u(offset+38);if(count<2||count>1000||offset+42+count*12>end)return null;
+    const virtual=new Uint8Array(38+count*12+100);virtual.set(bytes.subarray(offset,offset+34));virtual.set(bytes.subarray(offset+38,offset+42),34);
+    const order=[[0,1,2],[1,0,2],[0,2,1],[0,1,2],[1,2,0],[0,1,2],[2,0,1],[1,0,2],[0,2,1],[0,1,2]];
+    for(let i=0;i<count;i++)for(let axis=0;axis<3;axis++){
+      const at=offset+42+i*12+order[i%10][axis]*4;
+      virtual.set(bytes.subarray(at,at+4),38+i*12+axis*4);
+    }
     const r=readPrjCurve(virtual,0,index,{polylines:true});if(!r)return null;
     r.offset=offset;r.entity.id=`prj-${offset}-${r.entity.source.sourceId}`;r.entity.source.offset=offset;
     r.entity.source.storage='v5-polyline';r.pointOffset=offset+42;r.pointEnd=r.geometryEnd=offset+42+count*12;return r;

@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>母版改版任务 · 制衣 CAD</title><link rel="stylesheet" href="agent.css"></head>
+<body><main><a href="./">← 返回纸样工作台</a><p class="eyebrow">制衣 CAD · 自动改版试验</p><h1>先核对母版，再执行改版</h1>
+<p>第一项：前后裤脚垂直加长 20 mm，保持膝线以上和脚口宽度，裤脚内部线同步移动。</p>
+<p class="notice">当前使用已验证规则生成任务，由本机 ET 执行器修改、保存并重开。此页面不会控制 ET，也不会生成修改后的 PRJ。沿弯曲缝线的长度变化与垂直加长量可能略有不同。</p>
+<section><h2>1 · 选择本机文件</h2><div class="fields"><label>原始裤装母版 PRJ<input id="agent-source" type="file" accept=".prj"></label><label>已验证的母版规则 JSON<input id="agent-profile" type="file" accept=".json"></label></div><p class="muted">文件只在浏览器本地读取。规则文件由本机验收生成，包含母版指纹；更换母版需要重新验证。</p></section>
+<section><h2>2 · 说明改版要求</h2><label for="agent-instruction">改版要求</label><input id="agent-instruction" type="text" value="裤长加长 20 mm" maxlength="120"><p class="muted">目前仅支持本母版的“裤长加长 20 mm”（或 2 cm）。这是受约束的规则任务，尚未接入大模型。</p><button id="agent-plan">核对并生成任务预览</button></section>
+<section><h2>3 · 核对执行计划</h2><p id="agent-status" role="status">请选择母版和对应规则。</p><dl id="agent-summary"></dl><ol id="agent-checks"></ol><button id="agent-download" disabled>下载改版任务 JSON</button><p class="muted">任务需要交给本机执行器。执行器会验证文件指纹、单位和选择对象，再用 ET 保存独立副本；遇到不匹配会停止。执行结果 PRJ 可返回工作台打开。</p></section>
+</main><script type="module" src="agent-ui.mjs"></script></body></html>
