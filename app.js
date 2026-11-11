@@ -38,6 +38,8 @@ import { createPrjWritebackPanel } from './prj-writeback-ui.mjs';
 import { createPrjEndpointExportSession } from './prj-endpoint-export.mjs';
 import { createPrjEndpointPanel } from './prj-endpoint-ui.mjs';
 import { createPrjSavePanel } from './prj-save-ui.mjs';
+import { createPrjLineExportSession } from './prj-line-export.mjs';
+import { createPrjLinePanel } from './prj-line-ui.mjs';
 const $ = id => document.getElementById(id);
 const svg = $('canvas'), drawing = $('drawing'), overlay = $('overlay');
 const ns = 'http://www.w3.org/2000/svg';
@@ -49,6 +51,7 @@ let undoStack = [], redoStack = [], toastTimer;
 let importPending = false;
 let prjExportSession = null;
 let prjEndpointSession = null;
+let prjLineSession = null;
 let recovery=null,recoverySuspended=false,recoveryFingerprint=null,recoveryHasRecord=false,projectRevision=0;
 let snapIndex=null,snapMatch=null,snapFailure=null,lastPointerWorld=null;
 let darkCanvas = false;
@@ -63,7 +66,9 @@ const prjWritebackPanel=createPrjWritebackPanel({getProject:()=>project,getSessi
 const prjEndpointPanel=createPrjEndpointPanel({getProject:()=>project,getSession:()=>prjEndpointSession,
   canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool),
   selectLine:id=>{selected=new Set([id]);setTool('node');refresh();fit(selectedEntities());},download,notify});
-const prjSavePanel=createPrjSavePanel({getProject:()=>project,getTextSession:()=>prjExportSession,getEndpointSession:()=>prjEndpointSession,
+const prjLinePanel=createPrjLinePanel({getProject:()=>project,getSession:()=>prjLineSession,
+  canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool),download,notify});
+const prjSavePanel=createPrjSavePanel({getProject:()=>project,getTextSession:()=>prjExportSession,getEndpointSession:()=>prjEndpointSession,getLineSession:()=>prjLineSession,openLinePreview:()=>prjLinePanel.open(),
   canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool)});
 function emptyProject() { return { format: 'zhiyi-cad', version: 6, name: '未命名纸样', units: 'mm', entities: [], groups: [], seamAllowances: [], notches:[], seamChecks:[], warnings: [] }; }
 const matchPanel=createSeamCheckPanel({getProject:()=>project,commit:next=>{checkpoint();project=next;finishEdit();},setTool,render,fit,notify,download});
@@ -1054,10 +1059,11 @@ $('export').onclick=action(()=>{
   notify('已导出当前基码 DXF · '+(options.curveMode==='native'?'保留原生样条':'折线采样偏差 '+options.tolerance+' mm')+'。各尺码在放码面板导出；不含服装关联规则。');
 });
 function canReplace() { return !hasUnsavedWork() || confirm('当前工程有未保存的修改或绘图草稿。继续会替换当前画布，是否继续？'); }
-function loadProject(value, sourceSession=null, endpointSession=null) {
+function loadProject(value, sourceSession=null, endpointSession=null, lineSession=null) {
   prjSavePanel.reset();
   prjWritebackPanel.reset();prjExportSession=sourceSession;
   prjEndpointPanel.reset();prjEndpointSession=endpointSession;
+  prjLinePanel.reset();prjLineSession=lineSession;
   const suspended=recoverySuspended;recoverySuspended=true;
   recovery?.writer.newContext();recoveryFingerprint=null;recoveryHasRecord=false;
   constructionInput.reset();
@@ -1085,6 +1091,7 @@ $('new').onclick=()=>{if(canReplace())loadProject(emptyProject());};
 $('open').onclick=$('welcome-open').onclick=()=>$('file').click();
 async function openFile(file) {
   if(prjSavePanel.isOpen()){notify('请先关闭保存 PRJ 窗口。');return;}
+  if(prjLinePanel.isOpen()){notify('请先关闭新增直线 PRJ 预览。');return;}
   if(prjEndpointPanel.isOpen()){notify('请先关闭 PRJ 端点回存预览。');return;}
   if(prjWritebackPanel.isOpen()){notify('请先关闭 PRJ 回存预览。');return;}
   if(recovery.isOpen()){notify('请先关闭本机恢复窗口，再打开文件。');return;}
@@ -1096,7 +1103,7 @@ async function openFile(file) {
   document.querySelector('main').inert = true;
   $('new').disabled = true;
   try {
-    let value,sourceSession=null,endpointSession=null;
+    let value,sourceSession=null,endpointSession=null,lineSession=null;
     if(/\.prj$/i.test(file.name)){
       const sourceBytes=new Uint8Array(await file.arrayBuffer());
       const parsed=await prjImport.choose(parsePrj(sourceBytes,file.name));
@@ -1104,12 +1111,13 @@ async function openFile(file) {
       value={...emptyProject(),...parsed,units:'unknown'};
       try{sourceSession=createPrjTextExportSession(sourceBytes,file.name);}catch{sourceSession=null;}
       try{endpointSession=createPrjEndpointExportSession(sourceBytes,file.name);}catch{endpointSession=null;}
+      try{lineSession=createPrjLineExportSession(sourceBytes,file.name);}catch{lineSession=null;}
       darkCanvas = true; $('grid').checked = false; $('show-text').checked = true;
     } else if(/\.dxf$/i.test(file.name)){
       const decoded=decodeDxfBytes(await file.arrayBuffer());value={...emptyProject(),...fromDxf(decoded.text),name:file.name.replace(/\.dxf$/i,'')};
       value.metadata.sourceFile=file.name;value.metadata.dxfImport.encoding=decoded.encoding;
     } else value=validateProject(JSON.parse(await file.text()));
-    validateProject(value);loadProject(value,sourceSession,endpointSession);
+    validateProject(value);loadProject(value,sourceSession,endpointSession,lineSession);
     notify('已打开 '+file.name+' · '+value.entities.length+' 个图元'+(value.warnings?.length?' · 请查看导入报告':''));
   } catch(error) { notify('导入失败：'+error.message); }
   finally { importPending = false; document.querySelector('main').inert = false; $('new').disabled = false; }
@@ -1134,6 +1142,7 @@ $('demo').onclick=()=>{
   value.warnings=['示例用于体验绘图操作，未经服装版型验证。'];loadProject(value);
 };
 window.addEventListener('keydown',event=>{
+  if(prjLinePanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
   if(prjSavePanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
   if(prjEndpointPanel.isOpen())return;
   if(prjWritebackPanel.isOpen())return;

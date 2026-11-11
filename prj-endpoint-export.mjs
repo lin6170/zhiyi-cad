@@ -1,5 +1,6 @@
 import { parsePrj } from './prj-parser.mjs';
 import { validateProject } from './geometry.mjs';
+import { readPrjCurveReferences as referenceRecords } from './prj-references.mjs';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const signature = [0x51, 0x7f, 1, 1, 0, 0, 0, 0x40];
@@ -17,22 +18,6 @@ function copyBytes(input) {
   throw new Error('端点回存需要原始 PRJ 字节。');
 }
 
-// Decode every curve's node references before considering an isolated line.
-// These layouts are separate from piece ownership; equal coordinates alone are not ownership.
-function referenceRecords(bytes, parsed) {
-  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-  const curves=parsed.entities.filter(e=>[2,4].includes(e.source?.recordKind)).sort((a,b)=>a.source.offset-b.source.offset);
-  return curves.map((entity,index)=>{
-    const end=curves[index+1]?.source.offset ?? parsed.metadata.pieceSectionOffset-4;
-    let cursor=entity.source.offset+(entity.source.recordKind===4?41:58);
-    const word=()=>{if(cursor+4>end)throw new Error('曲线引用范围不完整，不能回存端点。');const value=view.getUint32(cursor,true);cursor+=4;return value;};
-    const skip=count=>{if(count>10000||cursor+count>end)throw new Error('曲线引用布局不受支持。');cursor+=count;};
-    if(entity.source.recordKind===4){skip(word()*12);skip(word()*12);skip(word()*4);}
-    const references=()=>{const count=word();if(count>10000||cursor+count*4>end)throw new Error('节点引用数量异常。');const indices=Array.from({length:count},word);if(indices.some(i=>i<1||i>parsed.metadata.nodes.length))throw new Error('节点引用索引超界。');return indices;};
-    const direct=references(),secondary=references();
-    return {entity,index:index+1,direct,secondary,tailOffset:cursor,end};
-  });
-}
 function coordinateCopies(bytes, offset) {
   const matches=[];
   for(let i=0;i+8<=bytes.length;i++){

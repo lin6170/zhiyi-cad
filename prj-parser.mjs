@@ -3,11 +3,19 @@ import { parsePrjAnnotations } from './prj-annotations.mjs';
 import { scanPrjCurves, prjCurveStats } from './prj-curves.mjs';
 import { parsePrjGroups } from './prj-groups.mjs';
 import { parseLegacyPrj, legacyPrjSignature } from './prj-legacy.mjs';
+import { parseNativeV5Prj, nativeV5Signature } from './prj-v5.mjs';
+import { decodePrjStorage, encodedV5Signature } from './prj-storage.mjs';
 export function parsePrj(input, filename = 'ET project.prj') {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.byteLength < 100 || bytes.byteLength > 16 * 1024 * 1024) {
     throw new Error('PRJ 文件大小不在当前支持范围内（100 字节至 16 MB）。');
   }
+  if (encodedV5Signature.every((value,index)=>bytes[index]===value)) {
+    const project=parseNativeV5Prj(decodePrjStorage(bytes),filename);
+    project.metadata.storage='v5-496-interleave-md5';
+    return project;
+  }
+  if (nativeV5Signature.every((value,index)=>bytes[index]===value)) return parseNativeV5Prj(bytes,filename);
   if (legacyPrjSignature.every((value,index)=>bytes[index]===value)) return parseLegacyPrj(bytes,filename);
   const signature = [0x51, 0x7f, 1, 1, 0, 0, 0, 0x40];
   if (!signature.every((value, index) => bytes[index] === value)) {

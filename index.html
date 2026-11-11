@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>制衣 CAD · 纸样工作台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="line-edit.css"><link rel="stylesheet" href="position.css"><link rel="stylesheet" href="spread.css"><link rel="stylesheet" href="dart.css"><link rel="stylesheet" href="unfold.css"><link rel="stylesheet" href="piece-split.css"><link rel="stylesheet" href="piece-merge.css"><link rel="stylesheet" href="dxf.css"><link rel="stylesheet" href="table.css"><link rel="stylesheet" href="recovery.css"><link rel=stylesheet href=intersection-trim.css><link rel=stylesheet href=endpoint-extend.css><link rel="stylesheet" href="prj-writeback.css"><link rel="stylesheet" href="prj-endpoint.css"><link rel="stylesheet" href="prj-save.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>制衣 CAD · 纸样工作台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="line-edit.css"><link rel="stylesheet" href="position.css"><link rel="stylesheet" href="spread.css"><link rel="stylesheet" href="dart.css"><link rel="stylesheet" href="unfold.css"><link rel="stylesheet" href="piece-split.css"><link rel="stylesheet" href="piece-merge.css"><link rel="stylesheet" href="dxf.css"><link rel="stylesheet" href="table.css"><link rel="stylesheet" href="recovery.css"><link rel=stylesheet href=intersection-trim.css><link rel=stylesheet href=endpoint-extend.css><link rel="stylesheet" href="prj-writeback.css"><link rel="stylesheet" href="prj-endpoint.css"><link rel="stylesheet" href="prj-save.css"><link rel="stylesheet" href="prj-line.css"></head>
 <body>
 <header><div class="brand"><span class="brand-icon">衣</span><div><strong>制衣 CAD</strong><small>PATTERN STUDIO</small></div></div><div class="document"><span class="dot"></span><span id="document-name">未命名纸样</span><span id="dirty"></span></div><div class="file-actions"><button id="new">新建</button><button id="open">打开文件</button><button id="save" class="primary" title="保存全部编辑为 .zycad 工程">保存工程</button><button id="save-prj" aria-haspopup="dialog">保存 PRJ</button><div class="dxf-actions"><button id="export">原生 DXF</button><button id="dxf-options-button" data-dxf-settings aria-haspopup="dialog" aria-label="DXF 导出设置" title="DXF 导出设置">⌄</button></div></div></header>
 <nav class="command-bar"><div class="command-group"><button id="undo" title="Ctrl+Z">↶ 撤销</button><button id="redo" title="Ctrl+Shift+Z">↷ 重做</button></div><div class="command-group"><button id="fit">适合窗口 <kbd>F</kbd></button><button id="zoom-out">−</button><span id="zoom">100%</span><button id="zoom-in">＋</button></div><label><input type="checkbox" id="whole-group" checked> 整组选取</label><label><input type="checkbox" id="snap" checked> 吸附</label><select id="snap-mode" aria-label="吸附方式" title="9 像素范围内吸附；Alt 临时关闭。交点使用原生有限线条，重合或无法判定时拒绝落点。节点拖动吸附到其他原始线条；垂足/切点用于直线、折线、布纹线、测量的下一点。"><option value="endpoint">端点 / 顶点</option><option value="midpoint">端点＋中点 / 半长点</option><option value="nearest">线条最近点</option><option value="intersection">交点 / 自交点</option><option value="perpendicular" disabled>垂足（从起点）</option><option value="tangent" disabled>切点（从起点）</option><option value="off">不吸附</option></select><label><input type="checkbox" id="grid" checked> 网格</label><label><input type="checkbox" id="show-text" checked> 文字</label><button id="theme" title="切换画布明暗">深色画布</button><button id="recovery-open" aria-haspopup="dialog">本机恢复</button><span class="local-badge">● 文件在浏览器本地处理</span></nav>
@@ -411,11 +411,19 @@
 <dialog id="prj-save-dialog" aria-labelledby="prj-save-title">
 <h2 id="prj-save-title">保存 PRJ · 选择回存内容</h2>
 <p id="prj-save-source"></p>
-<p>当前仅支持下面两种回存。裁片轮廓、曲线、新增或删除线条、整片移动等修改尚不能保存为 PRJ；全部编辑请先保存为 .zycad 工程。</p>
+<p>选择与本次修改对应的回存方式。裁片轮廓、曲线、删除原线和整片移动尚不能保存为 PRJ；全部编辑请先保存为 .zycad 工程。</p>
 <section aria-labelledby="prj-save-text-title"><h3 id="prj-save-text-title">标注文字</h3><p>支持等长度的数字、英文及英文标点。可在尺寸表或文字属性中修改；不会自动改变纸样尺寸。</p><p id="prj-save-text-status" class="prj-save-status" role="status"></p><button id="prj-save-text">预览标注 PRJ</button></section>
 <section aria-labelledby="prj-save-endpoint-title"><h3 id="prj-save-endpoint-title">独立直线的一个端点</h3><p>不属于裁片、没有共享节点的直线。用节点工具修改一个端点后再预览。</p><p id="prj-save-line-count"></p><p id="prj-save-endpoint-status" class="prj-save-status" role="status"></p><div class="pair"><button id="prj-save-locate">定位可修改的独立线</button><button id="prj-save-endpoint">预览端点 PRJ</button></div></section>
-<p>下载为独立 PRJ 副本，原文件保留。标注与端点修改目前需要分别回存。</p>
+<section aria-labelledby="prj-save-lines-title"><h3 id="prj-save-lines-title">新增独立直线 · 试验</h3><p>打开支持的原始 PRJ 后绘制普通直线，原图保持不变。新线独立保存，不加入裁片关联。已通过一份 ET 2017 样本的打开、继续画线、保存和重开验证。ET 另存后的 v5 文件目前可读取，后续修改请保存工程。</p><p id="prj-save-lines-status" class="prj-save-status" role="status"></p><button id="prj-save-lines">预览新增直线 PRJ</button></section>
+<p>下载为独立 PRJ 副本，原文件保留。标注、端点及新增线条目前需要分别回存。</p>
 <div class="pair"><button id="prj-save-close">返回编辑</button><button id="prj-save-project" class="primary">保存全部编辑为 .zycad</button></div>
+</dialog>
+<dialog id="prj-line-dialog" aria-labelledby="prj-line-title">
+<h2 id="prj-line-title">新增直线 PRJ · 保存预览</h2>
+<p id="prj-line-message" role="status"></p>
+<p>新线以独立实线保存，名称由 ET 重新生成。原有纸样、尺寸表文字与裁片关联保留。此功能仍待 ET 实际打开、继续编辑和保存重开验证。</p>
+<table><thead><tr><th>新增线条</th><th>网页坐标</th><th>写入 PRJ 的坐标</th></tr></thead><tbody id="prj-line-rows"></tbody></table>
+<div class="pair"><button id="prj-line-cancel">返回编辑</button><button id="prj-line-download" class="primary" disabled>下载新增直线 PRJ 副本</button></div>
 </dialog>
 <input id="file" type="file" accept=".prj,.dxf,.json,.zycad" hidden>
 <script type="module" src="app.js"></script>

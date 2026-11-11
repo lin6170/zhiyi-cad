@@ -1,6 +1,8 @@
 {
-  "version": 38,
-  "base_publication_commit": "9cf0b8932e67bb9a60f3a747baaf1cc9753a083a",
+  "version": 39,
+  "base_publication_commit": "ab405ae3411f1e0d0c8f82acf20b02760955d3fa",
   "hosting": "GitHub Pages",
-  "change": "顶部保存 PRJ 入口：回存范围、当前修改检查和工程保存选项"
+  "change": "新增独立直线 PRJ 回存；读取已验证的 ET v5 回存文件",
+  "native_validation": "One tested legacy PRJ: browser-added lines, ET continued drawing/save/reopen, independent no-edit control.",
+  "limits": "v5 import supports engineering save only; no v5 PRJ writeback or full ET parity."
 }
