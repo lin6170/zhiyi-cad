@@ -1,8 +1,8 @@
 {
-  "version": 41,
-  "base_publication_commit": "cde2ec657a06d592dbdc0db9b74b80b1e6c12b85",
+  "version": 42,
+  "base_publication_commit": "f96d75416f73a8d9e4ca8c5cdd2a061e44aa5be9",
   "hosting": "GitHub Pages",
-  "change": "Bounded template-task planner and additional native v5 polyline reader",
-  "native_validation": "Automatic ET trousers hem +20 mm, save/reopen, continued drawing, second save/reopen; original file retained.",
-  "limits": "Task planning only in browser; local machine-specific ET executor. No LLM yet. New v5 template variant remains read-only for direct PRJ export."
+  "change": "Unified CAD commands and direct browser pants hem +20 mm with comparison, atomic undo and guarded PRJ export",
+  "native_validation": "Actual browser bytes match ET-validated candidate: open/save/reopen, continue drawing, save/reopen and second save. Original file retained.",
+  "limits": "One fingerprinted private master and +20 mm vertical hem only. No LLM. New flag-0x01 v5 variant remains read-only for direct PRJ export."
 }
