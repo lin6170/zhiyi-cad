@@ -1,8 +1,8 @@
 {
-  "version": 44,
-  "base_publication_commit": "0e0e971d5f5e8485c0b48793b3be2d9b5d9e9376",
+  "version": 45,
+  "base_publication_commit": "66973efc80b8b4d911f367cc914442f72f9bd018",
   "hosting": "GitHub Pages",
-  "change": "Browser-authored pants rules: choose front/back, knee and hem; signed length changes and v5 continuation",
-  "native_validation": "Three real web exports opened, edited, saved and reopened in ET; six saved results accepted for further web edits.",
-  "limits": "Single-size structured pants; split lower sides at knee, near-parallel knee/hem, confirmed source units. Bounded +/-100 mm. Not all ET functions or arbitrary PRJ."
+  "change": "From-zero adult straight-pants demonstration drafting from dimensions and adjustable rules; no PRJ template required",
+  "validation": "Numerical geometry, empty-canvas command, undo/redo, browser project save/reopen, DXF/1:1 output and existing editor/PRJ regressions",
+  "limits": "Demonstration rules awaiting patternmaker fitting review; inseam mismatch reported; no waistband/fly/pockets; no complete new PRJ serialization; natural-language AI not yet connected"
 }

@@ -6,6 +6,7 @@ import {syncNotches} from './notches.mjs';
 import {syncSeamChecks} from './seam-checks.mjs';
 import {syncGradingPlans} from './grading.mjs';
 import {syncMarkerPlans} from './marker.mjs';
+import {DRAFT_COMMAND,appendPantsDraft} from './pants-draft.mjs';
 const copy=x=>JSON.parse(JSON.stringify(x));
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const finite=n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=100000;
@@ -22,6 +23,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     {type:'selection.translate',parameters:['entityIds: string[]','dx: number','dy: number','units: mm | source']},
     {type:'line.moveEndpoint',parameters:['entityId: string','endpoint: 0 | 1','point: Point','units: mm | source']},
     {type:PANTS_COMMAND,parameters:['deltaMm: -100..100, nonzero, 0.1 mm'],requires:'verified private template profile'},
+    {type:DRAFT_COMMAND,parameters:['measurements: body dimensions in mm','rules: demonstration formula parameters'],requires:'empty canvas or millimetre project; no PRJ template'},
     {type:'history.undo',parameters:[]},{type:'history.redo',parameters:[]}
   ],contract:'preview({schema,type,expectedRevision,parameters}) → apply(planId); failure leaves project/history unchanged'};}
   function read(){return {revision:getRevision(),name:getProject().name,units:getProject().units,entityCount:getProject().entities.length,groupCount:getProject().groups.length,...history()};}
@@ -30,7 +32,9 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     if(command.schema!=='zhiyi-cad-command/v1')throw Error('命令版本不受支持。');
     const before=copy(getProject()),p=command.parameters;let next=copy(before),summary={},measurements=[];
     const units=()=>{if(p.units!==(before.units==='mm'?'mm':'source'))throw Error('命令单位与工程不一致。');};
-    if(command.type===PANTS_COMMAND){
+    if(command.type===DRAFT_COMMAND){
+      keys(p,['measurements','rules']);const result=appendPantsDraft(before,p,makeId);next=result.project;summary=result.summary;measurements=result.measurements;
+    }else if(command.type===PANTS_COMMAND){
       keys(p,['deltaMm']);validatePantsDelta(p.deltaMm);const session=getPantsSession();if(!session)throw Error('请先加载并核对本母版的改版规则。');
       const result=session.plan(before,p);next=result.project;summary=result.summary;measurements=result.measurements;
     }else if(command.type==='line.add'){
