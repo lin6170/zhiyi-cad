@@ -6,6 +6,7 @@ import {planPantsGeometry,validatePantsDelta} from './pants-command.mjs';
 import {verifyPantsContinuation,planPantsContinuation} from './pants-template.mjs';
 import {readV5References} from './prj-v5-layout.mjs';
 import {decodePrjStorage,encodePrjStorage} from './prj-storage.mjs';
+import {PANTS_RULE_SCHEMA,validateUserPantsRule,verifyUserPantsContinuation,planUserPantsContinuation} from './pants-rules.mjs';
 const copy=x=>JSON.parse(JSON.stringify(x));
 const canonical=x=>Array.isArray(x)?'['+x.map(canonical).join(',')+']':x&&typeof x==='object'?'{'+Object.keys(x).filter(k=>x[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+canonical(x[k])).join(',')+'}':JSON.stringify(x);
 export const PANTS_NATIVE_VERIFIED=true;
@@ -13,6 +14,7 @@ export const WEB_PANTS_PROFILE_SHA256='dc92a203a49c7f98c2bf1c6b48ba8750aeea7a858
 export const WEB_PANTS_V2_SHA256='37a62d5b2ab46844e85fa24fc5843603e0aa69af2fa2ecdeda2e6a2b590a0a87';
 export async function sha256(bytes){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(v=>v.toString(16).padStart(2,'0')).join('');}
 export async function verifyWebPantsProfile(profile){
+  if(profile?.schema===PANTS_RULE_SCHEMA){if(JSON.stringify(profile).length>1000000)throw Error('规则文件过大。');return validateUserPantsRule(profile);}
   if(!profile||JSON.stringify(profile).length>160000||![WEB_PANTS_PROFILE_SHA256,WEB_PANTS_V2_SHA256].includes(await sha256(new TextEncoder().encode(JSON.stringify(profile)))))throw Error('规则文件未经本版本验证，不能执行。');
   return copy(profile);
 }
@@ -22,11 +24,12 @@ export async function createPantsPrjSession(input,filename,project,profile){
   const baseline=copy(validateProject(copy(project))),parsed=parsePrj(inputBytes,filename);
   const encoded=parsed.metadata.storage==='v5-496-interleave-md5',v5=parsed.metadata.layout==='native-v5-7248',bytes=encoded?decodePrjStorage(inputBytes):inputBytes;
   if(profile.schema==='zhiyi-web-pants-profile/v1'&&sourceSha256!==profile.sourceSha256)throw Error('ET 回存文件请使用新版母版规则。');
-  const continuation=profile.schema==='zhiyi-web-pants-profile/v2'?verifyPantsContinuation(parsed,profile):{totalDeltaMm:0};
+  const userRule=profile.schema===PANTS_RULE_SCHEMA;
+  const continuation=userRule?verifyUserPantsContinuation({...parsed,units:'unknown'},profile):profile.schema==='zhiyi-web-pants-profile/v2'?verifyPantsContinuation(parsed,profile):{totalDeltaMm:0};
   const checked=validateProject({format:'zhiyi-cad',version:6,units:'unknown',...copy(parsed)});
   for(const key of ['entities','groups','metadata'])if(canonical(baseline[key])!==canonical(checked[key]))throw Error('导入后已有修改，请重新打开原始 PRJ。');
   if(baseline.units!=='unknown')throw Error('当前比例已经改变，请重新打开原始 PRJ。');
-  if(v5&&(!encoded||parsed.metadata.sizeVariants?.length!==1||parsed.metadata.sizeVariants[0].flags!==1))throw Error('此 v5 母版变体尚未验收。');
+  if(v5&&(!encoded||parsed.metadata.sizeVariants?.length!==1||!(userRule?[1,129]:[1]).includes(parsed.metadata.sizeVariants[0].flags)))throw Error('此 v5 母版变体尚未验收。');
   const records=v5?readV5References(bytes,parsed,{verifiedPantsTemplate:true}):readPrjCurveReferences(bytes,parsed),byId=new Map(records.map(r=>[r.entity.source.sourceId,r]));
   const originalView=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   let plannedDelta=null;
@@ -34,7 +37,7 @@ export async function createPantsPrjSession(input,filename,project,profile){
     if(canonical(current)!==canonical(baseline))throw Error('工程已经修改，请撤销到原始母版再生成改版计划。');
     validatePantsDelta(parameters.deltaMm);
     if(Math.abs(continuation.totalDeltaMm+parameters.deltaMm)>100.00001)throw Error('改后相对原母版的累计变化须在 -100 至 +100 mm 内。');
-    const result=continuation.baseline?planPantsContinuation(baseline,profile,continuation,parameters.deltaMm):planPantsGeometry(baseline,profile,parameters);validateProject(result.project);plannedDelta=parameters.deltaMm;return result;
+    const result=userRule?planUserPantsContinuation(baseline,continuation,parameters.deltaMm):continuation.baseline?planPantsContinuation(baseline,profile,continuation,parameters.deltaMm):planPantsGeometry(baseline,profile,parameters);validateProject(result.project);plannedDelta=parameters.deltaMm;return result;
   }
   function exportPrj(current){
     if(plannedDelta===null)throw Error('请先生成改版计划。');
@@ -45,10 +48,11 @@ export async function createPantsPrjSession(input,filename,project,profile){
     const writePoint=(offset,p)=>{write(offset,p.x);write(offset+4,p.y);};
     for(const change of result.changes){
       const r=byId.get(change.before.source.sourceId),g=r?.geometry;
-      if(!g?.controlPoints||r.direct.length!==2||change.geometry.fit.length!==g.fitPoints.count||change.geometry.controls.length!==g.controlPoints.count)throw Error('曲线或节点结构超出已验证范围。');
+      const line=r?.entity.source.recordKind===2;
+      if(!g?.fitPoints||r.direct.length!==2||change.geometry.fit.length!==g.fitPoints.count||!line&&(!g.controlPoints||change.geometry.controls.length!==g.controlPoints.count))throw Error('曲线或节点结构超出已验证范围。');
       change.geometry.fit.forEach((p,i)=>writePoint(g.fitPoints.offsets?.[i]??g.fitPoints.offset+i*12,p));
-      change.geometry.controls.forEach((p,i)=>writePoint(g.controlPoints.offsets?.[i]??g.controlPoints.offset+i*12,p));
-      if(change.mode!=='translate'){
+      if(!line)change.geometry.controls.forEach((p,i)=>writePoint(g.controlPoints.offsets?.[i]??g.controlPoints.offset+i*12,p));
+      if(!line&&change.mode!=='translate'){
         const old=fitParameters(change.before.source.fitPoints),next=change.geometry.parameters;
         for(let i=0;i<g.parameterArray.count;i++){
           const offset=g.parameterArray.offsets?.[i]??g.parameterArray.offset+i*4,t=originalView.getFloat32(offset,true);
@@ -69,7 +73,8 @@ export async function createPantsPrjSession(input,filename,project,profile){
     for(const old of parsed.entities){
       const actual=newMap.get(old.id),change=changes.get(old.id);
       if(!change){if(canonical(actual)!==canonical(old))throw Error('写回改变了其他纸样或文字。');continue;}
-      if(canonical(actual.source.fitPoints)!==canonical(change.geometry.fit)||canonical(actual.source.controlPoints)!==canonical(change.geometry.controls)||canonical(actual.points)!==canonical(change.after.points)||!actual.curve)throw Error('写回曲线与网页结果不一致。');
+      if(actual.source.recordKind===2){if(canonical(actual.points)!==canonical(change.geometry.fit))throw Error('写回直线与网页结果不一致。');}
+      else if(canonical(actual.source.fitPoints)!==canonical(change.geometry.fit)||canonical(actual.source.controlPoints)!==canonical(change.geometry.controls)||canonical(actual.points)!==canonical(change.after.points)||!actual.curve)throw Error('写回曲线与网页结果不一致。');
     }
     return output;
   }

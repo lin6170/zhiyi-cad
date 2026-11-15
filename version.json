@@ -1,8 +1,8 @@
 {
-  "version": 43,
-  "base_publication_commit": "6da24583b67617b9589c8ccdba2a4dcc8690d54e",
+  "version": 44,
+  "base_publication_commit": "0e0e971d5f5e8485c0b48793b3be2d9b5d9e9376",
   "hosting": "GitHub Pages",
-  "change": "Signed pants length input and repeated browser editing of ET-saved native v5",
-  "native_validation": "Six real browser exports opened, edited, saved and reopened in ET; all originals retained; web +35 to ET v5 to web -12.5 to ET verified.",
-  "limits": "Verified private 666/34 template. Nonzero signed 0.1 mm input within +/-100 mm per operation and cumulative. Not arbitrary v5 geometry; no LLM."
+  "change": "Browser-authored pants rules: choose front/back, knee and hem; signed length changes and v5 continuation",
+  "native_validation": "Three real web exports opened, edited, saved and reopened in ET; six saved results accepted for further web edits.",
+  "limits": "Single-size structured pants; split lower sides at knee, near-parallel knee/hem, confirmed source units. Bounded +/-100 mm. Not all ET functions or arbitrary PRJ."
 }

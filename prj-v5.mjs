@@ -3,6 +3,7 @@
  * this module does not write the format or use preview images. */
 import { prjCurveStats } from './prj-curves.mjs';
 import { scanV5Curves as scanPrjCurves } from "./prj-v5-curves.mjs";
+import {v5SplineTailEnd} from './prj-v5-tail.mjs';
 export const nativeV5Signature = [0x48,0x72,1,1,0,0,0xa0,0x40];
 
 export function parseNativeV5Prj(bytes, filename) {
@@ -111,8 +112,9 @@ export function parseNativeV5Prj(bytes, filename) {
       for(let e=0;e<2;e++){const n=nodes[refs[0][e]-1],p=e?record.points.at(-1):record.points[0];require(n.ownerIndex===ci+1 && n.x===p.x && n.y===p.y,`曲线 ${ci+1} 与首尾节点坐标不一致。`);}
       require(c< (records[ci+1]?.offset ?? pieces[0].offset),'曲线记录边界异常。');
       if(ci===records.length-1){
-        require([2,23].includes(record.kind) && c+36<=pieces[0].offset,'曲线表尾部结构尚未支持。');
-        ranges.push({offset:c+36,length:pieces[0].offset-c-36,scope:'between-curves-and-pieces',structure:'unresolved-v5-auxiliary-records',declaredCount:root.auxiliaryCount});
+        const tailEnd=record.kind===4?v5SplineTailEnd(bytes,c,pieces[0].offset,record,nodes.length,records.length):c+36;
+        require([2,4,23].includes(record.kind) && tailEnd<=pieces[0].offset,'曲线表尾部结构尚未支持。');
+        ranges.push({offset:tailEnd,length:pieces[0].offset-tailEnd,scope:'between-curves-and-pieces',structure:'unresolved-v5-auxiliary-records',declaredCount:root.auxiliaryCount});
       }
       Object.assign(record.entity.source,{size:root.name,sizeId:root.id,pointReferences:refs[0],secondaryPointReferences:refs[1]});
     }

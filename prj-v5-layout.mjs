@@ -25,7 +25,7 @@ export function readV5References(bytes,parsed,{verifiedPantsTemplate=false}={}){
     const directReferences=refs(),secondaryReferences=refs();
     if(cursor>limit)fail();
     return {entity,index:i+1,start,end:limit,tailOffset:cursor,direct:directReferences.indices,
-      secondary:secondaryReferences.indices,directReferences,secondaryReferences,geometry:geometry.storageGeometry};
+      secondary:secondaryReferences.indices,directReferences,secondaryReferences,geometry:geometry.storageGeometry||(geometry.kind===2?{fitPoints:{offset:start+34,count:2,points:entity.points},controlPoints:null,parameterArray:null}:undefined)};
   });
 }
 
