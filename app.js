@@ -40,7 +40,7 @@ import { createPrjEndpointPanel } from './prj-endpoint-ui.mjs';
 import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs';
+import { createCadCommands } from './cad-commands.mjs?v=45';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
 const $ = id => document.getElementById(id);
