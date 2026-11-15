@@ -24,7 +24,7 @@ export function parsePrj(input, filename = 'ET project.prj') {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const u32 = offset => view.getUint32(offset, true);
   const decoder = new TextDecoder('gb18030', { fatal: true });
-  let textOffset = 61;
+  let textOffset = 12;
   function readString() {
     if (textOffset + 2 > bytes.length) throw new Error('PRJ 文本字段被截断。');
     const length = view.getUint16(textOffset, true);
@@ -36,6 +36,8 @@ export function parsePrj(input, filename = 'ET project.prj') {
   }
   const metadata = { format: 'ET PRJ experimental', unit: 'unknown', sourceFile: filename };
   try {
+    // "PD", the undo marker and the save date ET 2017 adds precede a fixed 41-byte block.
+    readString(); readString(); readString(); textOffset += 41;
     metadata.collection = readString();
     metadata.style = readString();
     metadata.note = readString();

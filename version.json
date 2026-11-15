@@ -1,8 +1,8 @@
 {
-  "version": 45,
-  "base_publication_commit": "66973efc80b8b4d911f367cc914442f72f9bd018",
+  "version": 46,
+  "base_publication_commit": "47b8d9be7e1166e728959d12c544cc7972fcc2d3",
   "hosting": "GitHub Pages",
-  "change": "From-zero adult straight-pants demonstration drafting from dimensions and adjustable rules; no PRJ template required",
-  "validation": "Numerical geometry, empty-canvas command, undo/redo, browser project save/reopen, DXF/1:1 output and existing editor/PRJ regressions",
-  "limits": "Demonstration rules awaiting patternmaker fitting review; inseam mismatch reported; no waistband/fly/pockets; no complete new PRJ serialization; natural-language AI not yet connected"
+  "change": "Complete new ET PRJ export for generated or millimetre patterns: pieces, curves, internal lines, grain, text and per-edge seam allowances",
+  "validation": "ET 2017 native open, unchanged re-save, native save/reopen, new line plus update-all-seams, save/reopen twice; browser export byte-identical to an independent computation; editor and PRJ regressions",
+  "limits": "Verified with ET 2017 and two straight-pants measurement sets only; no notches, grading, extra contours or imported-ET entities; demonstration drafting rules await patternmaker review"
 }

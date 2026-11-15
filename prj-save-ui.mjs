@@ -1,5 +1,5 @@
 /** Visible save entry; all PRJ bytes are still produced by the existing guarded writers. */
-export function createPrjSavePanel({getProject,getTextSession,getEndpointSession,getLineSession,openLinePreview,canPreview}) {
+export function createPrjSavePanel({getProject,getTextSession,getEndpointSession,getLineSession,openLinePreview,canPreview,refreshNew}) {
   const $=id=>document.getElementById(id),dialog=$('prj-save-dialog');
   function eligibility(session,button,message,missing){
     $(button).disabled=true;
@@ -10,7 +10,8 @@ export function createPrjSavePanel({getProject,getTextSession,getEndpointSession
   }
   $('save-prj').onclick=()=>{
     const text=getTextSession(),endpoint=getEndpointSession(),lines=getLineSession();
-    $('prj-save-source').textContent=text||endpoint||lines?'原始文件：'+(text||endpoint||lines).filename:'当前工程没有可回存的原始 PRJ 来源。请直接打开支持的原始 PRJ；.zycad、DXF、新建工程和旧版布局暂不支持回存。';
+    $('prj-save-source').textContent=text||endpoint||lines?'原始文件：'+(text||endpoint||lines).filename:'当前工程没有原始 PRJ 来源。新建或从尺寸生成的毫米纸样可保存为新的 ET PRJ；修改已有 PRJ 请直接打开原始文件。';
+    refreshNew?.();
     eligibility(text,'prj-save-text','prj-save-text-status','当前来源不支持标注回存。');
     eligibility(endpoint,'prj-save-endpoint','prj-save-endpoint-status','当前来源不支持独立直线端点回存。');
     eligibility(lines,'prj-save-lines','prj-save-lines-status','当前来源不支持新增直线回存。');

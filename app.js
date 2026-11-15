@@ -40,7 +40,8 @@ import { createPrjEndpointPanel } from './prj-endpoint-ui.mjs';
 import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=45';
+import { createPrjNewPanel } from './prj-new-ui.mjs';
+import { createCadCommands } from './cad-commands.mjs?v=46';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
 const $ = id => document.getElementById(id);
@@ -72,7 +73,9 @@ const prjEndpointPanel=createPrjEndpointPanel({getProject:()=>project,getSession
   selectLine:id=>{selected=new Set([id]);setTool('node');refresh();fit(selectedEntities());},download,notify});
 const prjLinePanel=createPrjLinePanel({getProject:()=>project,getSession:()=>prjLineSession,
   canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool),download,notify});
-const prjSavePanel=createPrjSavePanel({getProject:()=>project,getTextSession:()=>prjExportSession,getEndpointSession:()=>prjEndpointSession,getLineSession:()=>prjLineSession,openLinePreview:()=>prjLinePanel.open(),
+const prjNewPanel=createPrjNewPanel({getProject:()=>project,saveDialog:$('prj-save-dialog'),download,notify,
+  canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool)});
+const prjSavePanel=createPrjSavePanel({getProject:()=>project,getTextSession:()=>prjExportSession,getEndpointSession:()=>prjEndpointSession,getLineSession:()=>prjLineSession,openLinePreview:()=>prjLinePanel.open(),refreshNew:()=>prjNewPanel.status(),
   canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool)});
 function emptyProject() { return { format: 'zhiyi-cad', version: 6, name: '未命名纸样', units: 'mm', entities: [], groups: [], seamAllowances: [], notches:[], seamChecks:[], warnings: [] }; }
 const matchPanel=createSeamCheckPanel({getProject:()=>project,commit:next=>{checkpoint();project=next;finishEdit();},setTool,render,fit,notify,download});
@@ -1067,7 +1070,7 @@ $('export').onclick=action(()=>{
 function canReplace() { return !hasUnsavedWork() || confirm('当前工程有未保存的修改或绘图草稿。继续会替换当前画布，是否继续？'); }
 function loadProject(value, sourceSession=null, endpointSession=null, lineSession=null, rawSource=null) {
   projectRevision++;pantsPanel?.reset();draftPanel?.reset();cadCommands?.clear();pantsSource=rawSource;
-  prjSavePanel.reset();
+  prjSavePanel.reset();prjNewPanel.reset();
   prjWritebackPanel.reset();prjExportSession=sourceSession;
   prjEndpointPanel.reset();prjEndpointSession=endpointSession;
   prjLinePanel.reset();prjLineSession=lineSession;
@@ -1100,6 +1103,7 @@ async function openFile(file) {
   if(pantsPanel?.isOpen()||draftPanel?.isOpen()){notify('请先关闭自动制版或改版窗口。');return;}
   if(prjSavePanel.isOpen()){notify('请先关闭保存 PRJ 窗口。');return;}
   if(prjLinePanel.isOpen()){notify('请先关闭新增直线 PRJ 预览。');return;}
+  if(prjNewPanel.isOpen()){notify('请先关闭新建 PRJ 预览。');return;}
   if(prjEndpointPanel.isOpen()){notify('请先关闭 PRJ 端点回存预览。');return;}
   if(prjWritebackPanel.isOpen()){notify('请先关闭 PRJ 回存预览。');return;}
   if(recovery.isOpen()){notify('请先关闭本机恢复窗口，再打开文件。');return;}
@@ -1152,7 +1156,7 @@ $('demo').onclick=()=>{
 };
 window.addEventListener('keydown',event=>{
   if(pantsPanel?.isOpen()||draftPanel?.isOpen()){if((event.ctrlKey||event.metaKey)&&['s','z'].includes(event.key.toLowerCase()))event.preventDefault();return;}
-  if(prjLinePanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
+  if(prjLinePanel.isOpen()||prjNewPanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
   if(prjSavePanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
   if(prjEndpointPanel.isOpen())return;
   if(prjWritebackPanel.isOpen())return;
@@ -1189,11 +1193,11 @@ window.addEventListener('pagehide',flushRecovery);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushRecovery();});
 window.addEventListener('beforeunload',event=>{if(hasUnsavedWork()){event.preventDefault();event.returnValue='';}});
 cadCommands=createCadCommands({getProject:()=>project,getRevision:()=>projectRevision,
-  canExecute:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&!prjSavePanel.isOpen()&&!prjLinePanel.isOpen()&&!prjEndpointPanel.isOpen()&&!prjWritebackPanel.isOpen()&&['select','node'].includes(tool),
+  canExecute:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&!prjSavePanel.isOpen()&&!prjLinePanel.isOpen()&&!prjNewPanel.isOpen()&&!prjEndpointPanel.isOpen()&&!prjWritebackPanel.isOpen()&&['select','node'].includes(tool),
   commit:(next,ids)=>{checkpoint();project=next;selected=new Set(ids);finishEdit();},
   undo,redo,history:()=>({canUndo:Boolean(undoStack.length),canRedo:Boolean(redoStack.length)}),getPantsSession:()=>pantsSession});
 Object.defineProperty(window,'zhiyiCAD',{value:cadCommands,writable:false,configurable:false});
-draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRevision,download,reveal:()=>{refresh();fit();}});
+draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRevision,download,reveal:()=>{refresh();fit();},savePrj:()=>{refresh();fit();prjNewPanel.open();}});
 const draftEntry=document.createElement('button');draftEntry.id='draft-open';draftEntry.textContent='尺寸自动制版';draftEntry.setAttribute('aria-haspopup','dialog');draftEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');draftPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(draftEntry);
 const draftWelcome=document.createElement('button');draftWelcome.id='welcome-draft';draftWelcome.textContent='输入尺寸，生成新纸样';draftWelcome.className='primary';draftWelcome.onclick=()=>draftEntry.click();$('welcome-open').before(draftWelcome);
 pantsPanel=createPantsPanel({commands:cadCommands,getSource:()=>pantsSource,getProject:()=>project,getRevision:()=>projectRevision,setSession:s=>{pantsSession=s;},getSession:()=>pantsSession,download});
