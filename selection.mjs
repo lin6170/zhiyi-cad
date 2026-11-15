@@ -68,11 +68,11 @@ export function moveSelection(project, ids, dx, dy) {
   }
 }
 
-export function rotateSelection(project, ids, degrees) {
+export function rotateSelection(project, ids, degrees, center = null) {
   assertIndependentTransform(project,ids);
   const box = selectionBounds(project, ids);
   if (!box) return;
-  const cx = (box.minX + box.maxX) / 2, cy = (box.minY + box.maxY) / 2;
+  const cx = center ? center.x : (box.minX + box.maxX) / 2, cy = center ? center.y : (box.minY + box.maxY) / 2;
   const angle = degrees * Math.PI / 180, cosine = Math.cos(angle), sine = Math.sin(angle);
   const commitGradeVectors=prepareGradeVectorTransform(project,ids,p=>({x:p.x*cosine-p.y*sine,y:p.x*sine+p.y*cosine}));
   for (const entity of project.entities) if (ids.has(entity.id)) {
@@ -95,6 +95,18 @@ export function mirrorSelection(project, ids) {
   for(const recipe of project.notches||[])if(ids.has(recipe.baseEntityId))recipe.side*=-1;
   transformGradeVectors(project,ids,p=>({x:-p.x,y:p.y}));
   transformMarkerGrains(project,ids,p=>({x:-p.x,y:p.y}));
+}
+
+/** Reflect entities about the line through two points. Linked notches, grade rules and marker grain directions follow. */
+export function mirrorAboutAxis(project, ids, from, to) {
+  assertIndependentTransform(project,ids);
+  const dx=to.x-from.x,dy=to.y-from.y,length=Math.hypot(dx,dy);
+  if(!(length>1e-9))throw new Error('镜像轴的两个点重合');
+  const ux=dx/length,uy=dy/length,vector=p=>{const along=p.x*ux+p.y*uy;return {x:2*along*ux-p.x,y:2*along*uy-p.y};};
+  for (const entity of project.entities) if (ids.has(entity.id)) transform(entity, point => { const v=vector({x:point.x-from.x,y:point.y-from.y}); return { x: from.x+v.x, y: from.y+v.y }; });
+  for(const recipe of project.notches||[])if(ids.has(recipe.baseEntityId))recipe.side*=-1;
+  transformGradeVectors(project,ids,vector);
+  transformMarkerGrains(project,ids,vector);
 }
 
 function removeMembers(project, ids) {

@@ -7,7 +7,7 @@
  * Scope is deliberately strict. Anything this module cannot represent is
  * reported as a blocking reason instead of being dropped.
  */
-import { fitClampedSpline } from './fit-spline.mjs';
+import { fitClampedSpline, nativeFitPoints } from './fit-spline.mjs';
 import { evaluateBSpline, validateCurve } from './curves.mjs';
 import { orientChain, contoursForGroup } from './topology.mjs';
 import { textWidth } from './geometry.mjs';
@@ -244,6 +244,18 @@ export function convertCurveToEt(curve, tolerance = CURVE_TOLERANCE) {
   const p = curve.degree, knots = curve.knots, start = knots[p], end = knots[curve.controlPoints.length];
   const breaks = [...new Set(knots.filter(k => k >= start && k <= end))].sort((a, b) => a - b);
   const evaluate = t => evaluateBSpline(curve.controlPoints, knots, t, p);
+  // A curve that already has ET's own form is written with its own fit points, so ET shows the points it was drawn with.
+  const native = nativeFitPoints(curve);
+  if (native && native.length <= 120) {
+    try {
+      const data = fitEt(native.map(round)), etKnotVector = etKnots(data.parameters), own = [start, ...knots.slice(p + 1, knots.length - p - 1), end];
+      let deviation = 0;
+      for (let i = 1; i < own.length; i++) for (let j = 0; j <= 12; j++) {
+        deviation = Math.max(deviation, length(sub(evaluateBSpline(data.controls, etKnotVector, data.parameters[i - 1] + (data.parameters[i] - data.parameters[i - 1]) * j / 12, 3), evaluate(own[i - 1] + (own[i] - own[i - 1]) * j / 12))));
+      }
+      if (deviation <= tolerance) return { ...data, deviation, native: true };
+    } catch { /* not usable as it is: convert by sampling below */ }
+  }
   const REFERENCE = 4096, PER = 12, reference = Array.from({ length: REFERENCE + 1 }, (_, i) => evaluate(start + (end - start) * i / REFERENCE));
   const referenceIndex = t => (t - start) / (end - start) * REFERENCE;
   let last = null;

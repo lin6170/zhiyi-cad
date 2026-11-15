@@ -46,6 +46,7 @@ export function createAssistantPanel({ commands, host, getSelection = () => [], 
     '<label class="assistant-radio"><input type="radio" name="assistant-planner" value="remote"><span><strong>模型服务</strong>把指令交给你配置的服务，由大模型规划画图步骤。</span></label>' +
     '<div id="assistant-remote-fields"><label>服务地址<input id="assistant-service-url" type="url" placeholder="https://…" autocomplete="off" spellcheck="false"></label><label>访问码（可选，只在本次浏览器会话内保留）<input id="assistant-access-code" type="password" autocomplete="off"></label>' +
     '<p class="assistant-note">启用后，你输入的文字，以及画布上裁片和线条的名称、尺寸，会发送到这个服务。模型密钥只放在服务端，本页面不保存。</p></div>' +
+    '<label class="assistant-unit">没写单位的数字按<select id="assistant-length-unit"><option value="">第一次用到时问我</option><option value="cm">厘米</option><option value="inch">英寸（可以写 3/8、1 3/8）</option><option value="mm">毫米</option></select></label>' +
     '<div class="assistant-settings-actions"><button id="assistant-settings-save" type="button" class="primary">保存设置</button><span id="assistant-settings-status" role="status"></span></div></section>' +
     '<div id="assistant-log" class="assistant-log" role="log" aria-live="polite" tabindex="0"></div>' +
     '<section id="assistant-proposal" class="assistant-proposal" hidden><div class="assistant-proposal-title"><strong>计划预演</strong><span id="assistant-counts"></span></div><svg id="assistant-preview" role="img" aria-label="计划预演图：绿色为新增或修改后的线，红色虚线为将被替换或删除的线"></svg>' +
@@ -130,7 +131,7 @@ export function createAssistantPanel({ commands, host, getSelection = () => [], 
 
   function fillSettings() {
     for (const radio of panel.querySelectorAll('input[name=assistant-planner]')) radio.checked = radio.value === settings.planner;
-    $('assistant-service-url').value = settings.serviceUrl || ''; $('assistant-access-code').value = accessCode; $('assistant-remote-fields').hidden = settings.planner !== 'remote'; $('assistant-settings-status').textContent = '';
+    $('assistant-service-url').value = settings.serviceUrl || ''; $('assistant-access-code').value = accessCode; $('assistant-remote-fields').hidden = settings.planner !== 'remote'; $('assistant-settings-status').textContent = ''; $('assistant-length-unit').value = settings.preferences?.lengthUnit || '';
   }
   for (const radio of panel.querySelectorAll('input[name=assistant-planner]')) radio.onchange = () => { $('assistant-remote-fields').hidden = radio.value !== 'remote' || !radio.checked; };
   $('assistant-settings-toggle').onclick = () => { const open = $('assistant-settings').hidden; if (open) fillSettings(); $('assistant-settings').hidden = !open; $('assistant-settings-toggle').setAttribute('aria-expanded', String(open)); };
@@ -139,14 +140,15 @@ export function createAssistantPanel({ commands, host, getSelection = () => [], 
     try { if (planner === 'remote') serviceUrl = checkServiceUrl(serviceUrl); else if (serviceUrl) serviceUrl = checkServiceUrl(serviceUrl); }
     catch (error) { status.textContent = error.message; status.dataset.error = 'true'; return; }
     assistant.discard(); hideProposal();
-    settings = { ...settings, planner, serviceUrl }; accessCode = $('assistant-access-code').value; save(settings);
+    const lengthUnit = $('assistant-length-unit').value, { lengthUnit: previous, ...others } = settings.preferences || {};
+    settings = { ...settings, planner, serviceUrl, preferences: lengthUnit ? { ...others, lengthUnit } : others }; accessCode = $('assistant-access-code').value; save(settings);
     try { accessCode ? sessionStorage.setItem(ACCESS, accessCode) : sessionStorage.removeItem(ACCESS); } catch { /* kept in memory only */ }
     status.textContent = '已保存。'; delete status.dataset.error; mode();
     bubble('assistant', planner === 'remote' ? '已改用模型服务。之后的指令会发送到 ' + serviceUrl + '。' : '已改用本机指令，不会向外发送任何内容。');
   };
   function open() {
     panel.hidden = false; mode();
-    if (!greeted) { greeted = true; bubble('assistant', '说一句话，我来画。我先给出计划和预演，你确认后才改动画布，随时可以撤销。没写单位的数字按厘米理解。'); choices([...EXAMPLES.slice(0, 2), { label: '能做什么', send: '帮助' }]); }
+    if (!greeted) { greeted = true; bubble('assistant', '说一句话，我来画。我先给出计划和预演，你确认后才改动画布，随时可以撤销。数字没写单位时，第一次我会问是厘米还是英寸。'); choices([...EXAMPLES.slice(0, 2), { label: '能做什么', send: '帮助' }]); }
     $('assistant-input').focus({ preventScroll: true });
   }
   function close() { panel.hidden = true; }

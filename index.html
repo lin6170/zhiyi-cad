@@ -11,6 +11,8 @@
 <button data-tool="polyline" title="连续折线 (P)，Enter 完成"><b>⌁</b><span>折线</span></button>
 <button data-tool="curve" title="三点二次曲线 (C)"><b>⌒</b><span>曲线</span></button>
 <button data-tool="rectangle" title="矩形 (R)"><b>▭</b><span>矩形</span></button>
+<button data-tool="spline" title="多点曲线 (S)：依次单击曲线经过的点，Enter、右键或双击完成"><b>∿</b><span>多点</span></button>
+<button id="construct-tool" title="平行线、垂线、角度线、角平分线、等分、双圆规、量规、圆、圆角、角连接、长度调整、按轴镜像"><b>∥</b><span>画线</span></button>
 <button id="line-edit-tool" title="按弧长剪开曲线，连接多条线"><b>✂</b><span>修线</span></button>
 <button id="trim-tool" title="以原生曲线交点分区，选择保留或移除区间"><b>⌑</b><span>修剪</span></button>
 <button id="extend-tool" title="沿原曲线或端点切向延伸到参考线"><b>⇥</b><span>延伸</span></button>
@@ -426,6 +428,6 @@
 <div class="pair"><button id="prj-line-cancel">返回编辑</button><button id="prj-line-download" class="primary" disabled>下载新增直线 PRJ 副本</button></div>
 </dialog>
 <input id="file" type="file" accept=".prj,.dxf,.json,.zycad" hidden>
-<script type="module" src="app.js?v=47"></script>
+<script type="module" src="app.js?v=49"></script>
 <script type="module">const a=document.createElement('a');a.href='agent.html';a.target='_blank';a.rel='noopener';a.textContent='ET 本机任务';a.style.cssText='padding:6px 10px;color:#176c7a;white-space:nowrap';document.querySelector('.file-actions').append(a);</script>
 </body></html>

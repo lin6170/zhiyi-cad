@@ -41,9 +41,11 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=47';
+import { createCadCommands } from './cad-commands.mjs?v=49';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
+import { createConstructPanel } from './construct-ui.mjs';
+import { fitClampedSpline } from './fit-spline.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
 const $ = id => document.getElementById(id);
 const svg = $('canvas'), drawing = $('drawing'), overlay = $('overlay');
@@ -58,7 +60,7 @@ let prjExportSession = null;
 let prjEndpointSession = null;
 let prjLineSession = null;
 let recovery=null,recoverySuspended=false,recoveryFingerprint=null,recoveryHasRecord=false,projectRevision=0;
-let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null;
+let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null,constructPanel=null;
 let snapIndex=null,snapMatch=null,snapFailure=null,lastPointerWorld=null;
 let darkCanvas = false;
 let inspection = null, focusedInspection = null, focusedInspectionIssue = null;
@@ -162,6 +164,19 @@ function commitConstructionEntity(spec){
   const entity=spec.curve?refreshCurve(newEntity(spec.points,spec)):newEntity(spec.points,spec);
   checkpoint();project.entities.push(entity);selected=new Set([entity.id]);draft=[];snapMatch=null;snapFailure=null;finishEdit();
 }
+// Multi-point curve: click the points the curve passes through; Enter, a right click or a double click finishes it.
+function splinePoint(p){
+  if(draft.length&&p.x===draft.at(-1).x&&p.y===draft.at(-1).y)return;
+  if(draft.length>=128){notify('一条曲线最多 128 个点，请先完成这一条。');return;}
+  draft=[...draft,{x:p.x,y:p.y}];render();
+}
+function splineThrough(points){return refreshCurve({type:'polyline',points:[],closed:false,curve:fitClampedSpline(points).curve});}
+function finishSpline(){
+  if(tool!=='spline')return;
+  if(draft.length<2){notify('曲线至少需要两个点。');return;}
+  try{commitConstructionEntity(draft.length===2?{type:'polyline',points:draft.map(p=>({...p})),closed:false,layer:'outline',name:'直线'}:{type:'polyline',points:[],curve:fitClampedSpline(draft).curve,closed:false,layer:'outline',name:'曲线'});}
+  catch(error){notify(error.message);}
+}
 function finishPolyline(closed=false){if(tool!=='polyline')throw new Error('请先选择折线工具');commitConstructionEntity(finishConstructionPolyline(draft,{closed}));}
 function acceptConstructionPoint(p,{numeric=false}={}){
   if(numeric&&tool==='polyline'&&draft.length>2&&p.x===draft[0].x&&p.y===draft[0].y){finishPolyline(true);return;}
@@ -171,7 +186,7 @@ function acceptConstructionPoint(p,{numeric=false}={}){
   if(result.kind==='measurement'){const m=result.measurement;$('measurement').hidden=false;$('measurement').textContent='距离 '+m.length.toFixed(3)+' '+unit()+' · ΔX '+m.dx.toFixed(2)+' · ΔY '+m.dy.toFixed(2);}
   render();
 }
-function usesSnap(){return !space&&gesture?.type!=='pan'&&(['line','polyline','curve','rectangle','grain','measure','position'].includes(tool)||gesture?.type==='node');}
+function usesSnap(){return !space&&gesture?.type!=='pan'&&(['line','polyline','curve','spline','rectangle','grain','measure','position'].includes(tool)||tool==='construct'&&Boolean(constructPanel?.wantsSnap())||gesture?.type==='node');}
 function constraintMode(){return ['perpendicular','tangent'].includes($('snap-mode').value);}
 function constraintTool(){return ['line','polyline','grain','measure'].includes(tool);}
 function snap(p,{bypass=false}={}) {
@@ -323,6 +338,7 @@ function render() {
       points = [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]; closed = true;
     }
     if (tool === 'curve' && draft.length === 2) points = quadratic(draft[0], draft[1], drawingPointer);
+    if (tool === 'spline' && draft.length >= 2) { try { const last=draft.at(-1),through=drawingPointer.x===last.x&&drawingPointer.y===last.y?draft:[...draft,drawingPointer]; if(through.length>=3)points=splineThrough(through).points; } catch { /* the straight preview stays */ } }
     node('path', { d: pathData(points, closed), fill: 'none', stroke: '#b98b41', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }, overlay);
     for (const p of draft) {
       const s = screen(p); node('circle', { cx: s.x, cy: s.y, r: 3, fill: '#b98b41' }, overlay);
@@ -333,6 +349,7 @@ function render() {
   if(!gesture?.changed)lineEditPanel.draw({node,overlay,screen,pathData});
   if(!gesture?.changed)trimPanel.draw({node,overlay,screen,pathData});
   if(!gesture?.changed)extendPanel.draw({node,overlay,screen,pathData});
+  if(!gesture?.changed)constructPanel?.draw({node,overlay,screen,pathData});
   if(!gesture?.changed)positionPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
   if(!gesture?.changed)spreadPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
   if(!gesture?.changed)dartPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
@@ -382,6 +399,7 @@ function refresh() {
   lineEditPanel.refresh();
   trimPanel.refresh();
   extendPanel.refresh();
+  constructPanel?.refresh();
   positionPanel.refresh();
   spreadPanel.refresh();
   dartPanel.refresh();
@@ -668,17 +686,17 @@ function refreshControlEditor() {
     $('curve-info').textContent=entity.curve.degree+' 次样条 · '+points.length+' 个控制点\n弧长 '+result.value.toFixed(6)+' '+unit()+' · 积分误差估计 '+result.estimatedError.toExponential(2)+(result.converged?'':' · 尚未收敛')+'\n显示容差 '+(entity.curve.samplingTolerance??.002)+' '+unit()+(entity.curveSamplingCapped?' · 采样已达上限':'');
   }else $('curve-info').textContent=points.length+' 个折线节点 · '+unit();
 }
-// The assistant panel floats over the right part of the canvas; fitted content stays in the part that is still visible.
-function fitWidth(){const covered=assistantPanel?.isOpen()?assistantPanel.element.offsetWidth+24:0;return svg.clientWidth-covered>=240?svg.clientWidth-covered:svg.clientWidth;}
+// The assistant panel floats over the right of the canvas and the drafting tools over the left; fitted content stays in the part between them.
+function fitSpan(){const right=assistantPanel?.isOpen()?assistantPanel.element.offsetWidth+24:0,left=constructPanel?.isOpen()?constructPanel.element.offsetWidth+24:0,width=svg.clientWidth-left-right;return width>=240?{left,width}:{left:0,width:svg.clientWidth};}
 function fit(entities = project.entities) {
   snapMatch=null;snapFailure=null;
   if(tool==='marker'&&(!Array.isArray(entities)||entities===project.entities))entities=markerPanel.frame();
   if(tool==='plot'&&(!Array.isArray(entities)||entities===project.entities))entities=plotPanel.frame();
   const candidates=(Array.isArray(entities)?entities:project.entities).map(entity=>tool==='node'&&selected.has(entity.id)&&entity.curve?{...entity,points:entity.curve.controlPoints}:entity);
   const box = bounds(candidates); if (!box) return;
-  const viewWidth = fitWidth();
-  camera.scale = Math.max(.001, Math.min((viewWidth - 100) / Math.max(box.width, 1), (svg.clientHeight - 100) / Math.max(box.height, 1), 20));
-  camera.x = viewWidth / 2 - (box.minX + box.maxX) / 2 * camera.scale;
+  const span = fitSpan();
+  camera.scale = Math.max(.001, Math.min((span.width - 100) / Math.max(box.width, 1), (svg.clientHeight - 100) / Math.max(box.height, 1), 20));
+  camera.x = span.left + span.width / 2 - (box.minX + box.maxX) / 2 * camera.scale;
   camera.y = svg.clientHeight / 2 + (box.minY + box.maxY) / 2 * camera.scale; render();
 }
 function zoom(factor, center = { x: svg.clientWidth / 2, y: svg.clientHeight / 2 }) {
@@ -693,6 +711,8 @@ const hints = {
   line: '依次单击起点、终点 · Esc 取消',
   polyline: '连续单击添加节点 · Enter 完成 · 单击起点闭合',
   curve: '依次单击起点、控制点、终点 · 创建可编辑的二次曲线',
+  spline: '依次单击曲线经过的点 · Enter、右键或双击完成 · Backspace 退一点 · Esc 取消',
+  construct: '在左上角的面板里选工具 · 按提示点选线和点 · 输入尺寸后画到画布',
   rectangle: '单击两个对角点绘制矩形',
   measure: '依次单击两点测量直线距离',
   grain: '单击起点和终点绘制布纹方向线',
@@ -727,6 +747,7 @@ function setTool(value) {
   $('line-edit-tool').classList.toggle('active',tool==='line-edit');
   $('trim-tool').classList.toggle('active',tool==='trim');
   $('extend-tool').classList.toggle('active',tool==='extend');
+  $('construct-tool').classList.toggle('active',tool==='construct');
   $('position-tool').classList.toggle('active',tool==='position');
   $('spread-tool').classList.toggle('active',tool==='spread');
   $('dart-tool').classList.toggle('active',tool==='dart');
@@ -734,7 +755,7 @@ function setTool(value) {
   $('split-tool').classList.toggle('active',tool==='split');
   $('merge-tool').classList.toggle('active',tool==='merge');
   $('tool-hint').textContent = hints[tool];
-  svg.style.cursor = ['select','node'].includes(tool) ? 'default' : 'crosshair'; render();constructionInput.reveal();
+  svg.style.cursor = ['select','node'].includes(tool) ? 'default' : 'crosshair'; render();constructionInput.reveal();constructPanel?.refresh();
   if(tool==='notch'){refreshNotchPanel();$('notch-panel').scrollIntoView({block:'center'});}
 }
 document.querySelectorAll('[data-tool]').forEach(button => button.onclick = () => setTool(button.dataset.tool));
@@ -757,6 +778,8 @@ svg.addEventListener('pointerdown', event => {
   if(tool==='line-edit'){const target=hit(p);if(target)lineEditPanel.pick(target.entity);else notify('请点选原始线条');return;}
   if(tool==='trim'){trimPanel.pick(hit(p)?.entity,p,8/camera.scale);return;}
   if(tool==='extend'){extendPanel.pick(hit(p)?.entity,p,8/camera.scale);return;}
+  if(tool==='construct'){constructPanel.pick({point:pointer,raw:p,entity:hit(p)?.entity||null});return;}
+  if(tool==='spline'){splinePoint(pointer);return;}
   if (tool === 'node' && selectedEntity()?.type !== 'text' && selectedEntity()) {
     const entity = selectedEntity();
     const index = (entity.derivedFrom||entity.notchFrom?[]:entity.curve?.controlPoints||entity.points).findIndex(point => distance(point, p) < 8 / camera.scale);
@@ -844,6 +867,8 @@ function cancelGesture() {
   gesture = null; refresh();
 }
 svg.addEventListener('pointerup', endGesture); svg.addEventListener('pointercancel', cancelGesture);
+svg.addEventListener('contextmenu',event=>{if(tool==='spline'){event.preventDefault();finishSpline();}});
+svg.addEventListener('dblclick',event=>{if(tool==='spline'){event.preventDefault();finishSpline();}});
 svg.addEventListener('wheel', event => {
   event.preventDefault(); const r = svg.getBoundingClientRect();
   zoom(Math.exp(-event.deltaY * .0015), {x:event.clientX-r.left,y:event.clientY-r.top});
@@ -1185,8 +1210,10 @@ window.addEventListener('keydown',event=>{
   if(event.code==='Space'){event.preventDefault();space=true;svg.style.cursor='grab';}
   if(event.key==='Escape'){cancelGesture();draft=[];selected=new Set();$('measurement').hidden=true;setTool('select');refresh();}
   if(event.key==='Enter'&&tool==='polyline'&&draft.length>=2){try{finishPolyline(false);}catch(error){notify(error.message);}}
+  if(event.key==='Enter'&&tool==='spline'){event.preventDefault();finishSpline();return;}
+  if(tool==='spline'&&draft.length&&event.key==='Backspace'){event.preventDefault();draft=draft.slice(0,-1);render();return;}
   if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();remove();}
-  const keys={v:'select',n:'node',l:'line',p:'polyline',c:'curve',r:'rectangle',m:'measure',g:'grain'};
+  const keys={v:'select',n:'node',l:'line',p:'polyline',c:'curve',s:'spline',r:'rectangle',m:'measure',g:'grain'};
   if(keys[event.key.toLowerCase()])setTool(keys[event.key.toLowerCase()]);
   if(event.key.toLowerCase()==='f')fit();
 });
@@ -1197,7 +1224,7 @@ window.addEventListener('pagehide',flushRecovery);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushRecovery();});
 window.addEventListener('beforeunload',event=>{if(hasUnsavedWork()){event.preventDefault();event.returnValue='';}});
 cadCommands=createCadCommands({getProject:()=>project,getRevision:()=>projectRevision,
-  canExecute:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&!prjSavePanel.isOpen()&&!prjLinePanel.isOpen()&&!prjNewPanel.isOpen()&&!prjEndpointPanel.isOpen()&&!prjWritebackPanel.isOpen()&&['select','node'].includes(tool),
+  canExecute:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&!prjSavePanel.isOpen()&&!prjLinePanel.isOpen()&&!prjNewPanel.isOpen()&&!prjEndpointPanel.isOpen()&&!prjWritebackPanel.isOpen()&&['select','node','construct'].includes(tool),
   commit:(next,ids)=>{checkpoint();project=next;selected=new Set(ids);finishEdit();},
   undo,redo,history:()=>({canUndo:Boolean(undoStack.length),canRedo:Boolean(redoStack.length)}),getPantsSession:()=>pantsSession});
 Object.defineProperty(window,'zhiyiCAD',{value:cadCommands,writable:false,configurable:false});
@@ -1207,6 +1234,8 @@ const draftWelcome=document.createElement('button');draftWelcome.id='welcome-dra
 assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),getSelection:()=>[...selected],
   prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>refresh(),
   hostActions:{'view.fit':()=>{refresh();fit();},'file.savePrj':()=>{refresh();fit();prjNewPanel.open();},'file.exportDxf':()=>{$('export').click();},'file.saveProject':()=>{save();}}});
+constructPanel=createConstructPanel({commands:cadCommands,host:$('workspace'),getProject:()=>project,getSelection:()=>selected,getTool:()=>tool,setTool,render,notify});
+$('construct-tool').onclick=()=>{if(!importPending&&!gesture&&!draft.length)constructPanel.begin();else notify('请先完成或取消当前编辑。');};
 const assistantEntry=document.createElement('button');assistantEntry.id='assistant-open';assistantEntry.textContent='AI 助手';assistantEntry.setAttribute('aria-pressed','false');assistantEntry.onclick=()=>{assistantPanel.toggle();assistantEntry.setAttribute('aria-pressed',String(assistantPanel.isOpen()));};document.querySelector('.file-actions').append(assistantEntry);
 $('assistant-close').addEventListener('click',()=>assistantEntry.setAttribute('aria-pressed','false'));
 const assistantWelcome=document.createElement('button');assistantWelcome.id='welcome-assistant';assistantWelcome.textContent='说一句话，让助手画';assistantWelcome.onclick=()=>{if(!assistantPanel.isOpen())assistantEntry.click();};$('welcome-open').before(assistantWelcome);

@@ -1,8 +1,8 @@
 {
-  "version": 47,
-  "base_publication_commit": "c5159d090878e70eaafb55e4c5e88987b53e74d0",
+  "version": 49,
+  "base_publication_commit": "a6314358c6d5ff3a234020c23e7c1af269683182",
   "hosting": "GitHub Pages",
-  "change": "In-page drawing assistant with an offline instruction parser; command catalogue of 21 validated commands with multi-step plans; redraft from changed measurements. Published together with v46 (complete new ET PRJ export)",
-  "validation": "Node tests, 11 real-browser suites, and an ET 2017 round trip of the PRJ that the assistant-drawn pattern produced in the browser: open, unchanged re-save, native save/reopen, new line plus update-all-seams, save/reopen twice",
-  "limits": "No model service is included and no key is shipped; the offline parser understands fixed phrases only; drafting from measurements covers the straight-pants demonstration rules, which await patternmaker review"
+  "change": "Drafting tools checked against ET 2017 tool by tool and aligned with it; 21 panel tools and 42 validated commands (right-angle connection, lines between division points, perpendicular and tangent from a point, end move, vertical and horizontal correction, curve point editing); curves keep their points in the ET PRJ; the assistant asks once whether bare numbers are centimetres or inches and reads inch fractions. Includes v48 (first drafting tools, multi-point curve).",
+  "validation": "Node tests, 12 real-browser suites, the same input run in ET 2017 and in the page for ten tools and for the end move of a curve, and an ET 2017 round trip of the drafting file made in the browser: open, unchanged re-save, native save/reopen, new line, save/reopen three times",
+  "limits": "No measuring commands yet; fillet, corner join and length change apply to loose straight lines only; a PRJ without pieces can be written and opened by ET but not reopened by this page; no model service is included and no key is shipped; drafting from measurements covers the straight-pants demonstration rules, which await patternmaker review"
 }

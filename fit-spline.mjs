@@ -48,6 +48,29 @@ export function fitClampedSpline(points){
   const rebuilt=reconstructSpline(fit,storedControls);
   return {fit,controls:storedControls,parameters,curve:{kind:'bspline',degree:3,controlPoints:rebuilt.controlPoints,knots:rebuilt.knots,samplingTolerance:.002}};
 }
+/**
+ * The fit points of a curve that already has ET's own spline form, or null.
+ * ET interpolates its fit points with a clamped cubic B-spline: the knots are the chord lengths between the
+ * fit points (first and last chord times 1.5) and each end control point is repeated. A curve made by
+ * fitClampedSpline keeps this form under moves, rotations and mirroring; editing its control points breaks it.
+ */
+export function nativeFitPoints(curve,tolerance=1e-6){
+  if(!curve||curve.kind!=='bspline'||curve.degree!==3)return null;
+  const c=curve.controlPoints,k=curve.knots;
+  if(c.length<4||c.length>130||k.length!==c.length+4)return null;
+  const start=k[0],end=k.at(-1),span=end-start;
+  if(!(span>0))return null;
+  for(let i=1;i<4;i++)if(k[i]!==start||k[k.length-1-i]!==end)return null;
+  const same=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)<=1e-9*(1+Math.hypot(a.x,a.y));
+  if(!same(c[0],c[1])||!same(c.at(-1),c.at(-2)))return null;
+  const at=[start,...k.slice(4,k.length-4),end];
+  for(let i=1;i<at.length;i++)if(!(at[i]>at[i-1]))return null;
+  const fit=at.map((t,i)=>i===0?{x:c[0].x,y:c[0].y}:i===at.length-1?{x:c.at(-1).x,y:c.at(-1).y}:evaluateBSpline(c,k,t,3));
+  let parameters;try{parameters=fitParameters(fit);}catch{return null;}
+  const total=parameters.at(-1);
+  for(let i=1;i<at.length-1;i++)if(Math.abs((at[i]-start)/span-parameters[i]/total)>tolerance)return null;
+  return fit;
+}
 export function changedSpline(entity,geometry){
   const next=JSON.parse(JSON.stringify(entity));next.curve=geometry.curve;next.source.modified=true;refreshCurve(next);return next;
 }

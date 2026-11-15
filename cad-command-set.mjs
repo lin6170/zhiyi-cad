@@ -7,62 +7,22 @@
  */
 import { bounds, length as entityLength } from './geometry.mjs';
 import { refreshCurve } from './curves.mjs';
-import { fitClampedSpline } from './fit-spline.mjs';
+import { fitClampedSpline, nativeFitPoints } from './fit-spline.mjs';
 import { orientChain, contoursForGroup } from './topology.mjs';
 import { moveSelection, rotateSelection, mirrorSelection, deleteSelection, duplicateSelection } from './selection.mjs';
 import { applyAllowance } from './seams.mjs';
 import { seamEdgeDefinitions, edgeKey } from './seam-widths.mjs';
 import { draftStraightPants, draftFields, validateDraftInput, DRAFT_COMMAND, DRAFT_SCHEMA } from './pants-draft.mjs';
 import { transform } from './geometry.mjs';
+import { LIMIT, number, point, idList, text, object, layer, validateInput, requireMm, samePoint, entityOf, groupOf, addEntity, assertWholePieces, existingIds, round } from './cad-command-kit.mjs';
+import { constructCommands } from './cad-command-construct.mjs';
+import { constructMoreCommands } from './cad-command-construct-more.mjs';
+
+export { validateInput };
 
 export const COMMAND_SET_VERSION = 'zhiyi-command-set/v1';
-const LIMIT = 100000;
-const number = (minimum, maximum, description) => ({ type: 'number', minimum, maximum, description });
-const point = description => ({ type: 'object', description, properties: { x: number(-LIMIT, LIMIT, '横坐标，毫米，向右为正'), y: number(-LIMIT, LIMIT, '纵坐标，毫米，向上为正') }, required: ['x', 'y'], additionalProperties: false });
-const idList = (description, minItems = 1) => ({ type: 'array', description, items: { type: 'string', minLength: 1, maxLength: 120 }, minItems, maxItems: 5000 });
-const text = (maxLength, description) => ({ type: 'string', minLength: 1, maxLength, description });
-const object = (properties, required, description) => ({ type: 'object', description, properties, required, additionalProperties: false });
-const layer = { type: 'string', enum: ['outline', 'internal'], description: 'outline 为净样或普通线，internal 为内部线' };
-
-/** Validate a value against the JSON Schema subset used by the command set. */
-export function validateInput(schema, value, path = '参数') {
-  const fail = message => { throw new Error(path + message); };
-  if (schema.type === 'object') {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('必须是对象。');
-    for (const key of Object.keys(value)) if (!Object.prototype.hasOwnProperty.call(schema.properties, key)) fail('含未定义的字段“' + key + '”。');
-    for (const key of schema.required || []) if (value[key] === undefined) fail('缺少“' + key + '”。');
-    for (const [key, child] of Object.entries(schema.properties)) if (value[key] !== undefined) validateInput(child, value[key], path + '.' + key);
-  } else if (schema.type === 'array') {
-    if (!Array.isArray(value)) fail('必须是数组。');
-    if (value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? Infinity)) fail('的数量须在 ' + (schema.minItems ?? 0) + ' 至 ' + schema.maxItems + ' 之间。');
-    value.forEach((item, index) => validateInput(schema.items, item, path + '[' + index + ']'));
-  } else if (schema.type === 'number' || schema.type === 'integer') {
-    if (typeof value !== 'number' || !Number.isFinite(value) || (schema.type === 'integer' && !Number.isInteger(value))) fail('必须是有限数字。');
-    if ((schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum)) fail('须在 ' + schema.minimum + ' 至 ' + schema.maximum + ' 之间。');
-    if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) fail('须大于 ' + schema.exclusiveMinimum + '。');
-  } else if (schema.type === 'string') {
-    if (typeof value !== 'string') fail('必须是文字。');
-    if (value.length < (schema.minLength ?? 0) || value.length > (schema.maxLength ?? Infinity)) fail('的长度不符合要求。');
-    if (schema.enum && !schema.enum.includes(value)) fail('须为 ' + schema.enum.join('、') + ' 之一。');
-    if ([...value].some(c => c.codePointAt(0) < 32)) fail('含控制字符。');
-  } else if (schema.type === 'boolean') {
-    if (typeof value !== 'boolean') fail('必须是布尔值。');
-  } else throw new Error('命令定义的参数类型无效。');
-  return value;
-}
-
 // ---------------------------------------------------------------- helpers
-const requireMm = project => { if (project.units !== 'mm') throw new Error('当前工程的单位未确认为毫米，不能执行绘图命令。'); };
-const samePoint = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-9;
-function entityOf(project, id) { const entity = project.entities.find(e => e.id === id); if (!entity) throw new Error('找不到图元 ' + id + '。'); return entity; }
-function groupOf(project, id) { const group = (project.groups || []).find(g => g.id === id); if (!group) throw new Error('找不到裁片 ' + id + '。'); return group; }
 function primaryContour(group) { const contour = contoursForGroup(group).find(c => c.role === 'primary-contour' && c.entityIds.length); if (!contour) throw new Error('裁片“' + group.name + '”没有轮廓定义。'); return contour; }
-function addEntity(project, env, entity) { const created = { id: env.makeId(), closed: false, layer: 'outline', ...entity }; project.entities.push(created); return created; }
-function assertWholePieces(project, ids) {
-  for (const group of project.groups || []) if (group.entityIds.some(id => ids.has(id)) && !group.entityIds.every(id => ids.has(id))) throw new Error('需包含完整裁片“' + group.name + '”，不能只处理其中一部分。');
-}
-function existingIds(project, list) { const ids = new Set(list); if (ids.size !== list.length) throw new Error('图元列表有重复。'); for (const id of ids) entityOf(project, id); return ids; }
-const round = value => Math.round(value * 1000) / 1000;
 function chainGap(entities) {
   if (entities.length === 1) return entities[0].closed ? 0 : Infinity;
   const end = (item, last) => { const pts = item.entity.curve?.controlPoints || item.entity.points; return pts[(item.reversed !== last) ? pts.length - 1 : 0]; };
@@ -308,6 +268,8 @@ export const commandSet = [
       const group = groupOf(project, p.groupId), before = project.entities.length; deleteSelection(project, new Set(group.entityIds));
       return { summary: { operation: 'piece.delete', groupId: group.id, name: group.name, removed: before - project.entities.length } };
     } },
+  ...constructCommands,
+  ...constructMoreCommands,
   { type: DRAFT_COMMAND, title: '按尺寸生成直筒裤', description: '输入人体尺寸和制版规则，从零生成成人基础直筒裤的前后裤片、省、布纹线、定位线和缝份。全部尺寸为毫米。公式是演示规则，未经试衣确认。',
     input_schema: draftSchema(false), external: true },
   { type: 'pattern.updateDraft', title: '按新尺寸重算纸样', description: '修改已生成直筒裤的部分尺寸或规则，整套纸样在原位置重新生成。纸样被手工改过时会拒绝，除非 discardManualEdits 为 true。',
@@ -326,18 +288,20 @@ export const commandFromToolName = name => commandSet.find(command => command.ty
 export function describeScene(project) {
   const byId = new Map(project.entities.map(e => [e.id, e])), grouped = new Set((project.groups || []).flatMap(g => g.entityIds));
   const drafts = project.metadata?.parametricDrafts || [], box = b => b && { minX: round(b.minX), minY: round(b.minY), maxX: round(b.maxX), maxY: round(b.maxY) };
+  // the points a curve was drawn through, numbered as the curve point commands number them
+  const through = e => { const fit = e.curve ? nativeFitPoints(e.curve) : null; return fit && fit.length <= 40 ? { through: fit.map(q => ({ x: round(q.x), y: round(q.y) })) } : {}; };
   const kind = e => e.type === 'text' ? 'text' : e.curve ? 'curve' : e.closed ? 'closed-polyline' : e.points.length === 2 ? 'line' : 'polyline';
   const pieces = (project.groups || []).slice(0, 200).map(group => {
     const members = group.entityIds.map(id => byId.get(id)).filter(Boolean), contourIds = contoursForGroup(group).find(c => c.role === 'primary-contour')?.entityIds || [], recipe = seamOf(project, group);
     return { id: group.id, name: group.name, bbox: box(bounds(members.filter(e => e.type !== 'text' && !e.derivedFrom))),
-      contour: contourIds.map(id => byId.get(id)).filter(Boolean).map(e => ({ entityId: e.id, name: e.name, kind: kind(e), lengthMm: round(entityLength(e)), ...(e.closed ? { segments: e.points.length } : {}) })),
+      contour: contourIds.map(id => byId.get(id)).filter(Boolean).map(e => ({ entityId: e.id, name: e.name, kind: kind(e), lengthMm: round(entityLength(e)), from: e.points[0], to: e.points.at(-1), ...(e.closed ? { segments: e.points.length } : {}) })),
       otherMembers: members.filter(e => !e.derivedFrom && !contourIds.includes(e.id)).slice(0, 60).map(e => ({ entityId: e.id, name: e.name, kind: kind(e), layer: e.layer })),
       seam: recipe ? { widthsMm: recipe.widthMode === 'edges' ? [...new Set(recipe.edgeWidths.map(w => w.width))].sort((a, b) => a - b) : [Math.abs(recipe.distance)],
         ...(recipe.widthMode === 'edges' ? { edges: recipe.edgeWidths.map(w => ({ entityId: w.entityId, ...(w.segmentIndex === null || w.segmentIndex === undefined ? {} : { segmentIndex: w.segmentIndex }), widthMm: w.width })) } : {}) } : null,
       draftId: drafts.find(d => d.groupIds.includes(group.id))?.id || null };
   });
   const loose = project.entities.filter(e => !grouped.has(e.id) && !e.derivedFrom).slice(0, 300).map(e => ({ id: e.id, name: e.name, kind: kind(e), layer: e.layer,
-    ...(e.type === 'text' ? { text: e.text, at: e.points[0] } : { lengthMm: round(entityLength(e)), from: e.points[0], to: e.points.at(-1) }) }));
+    ...(e.type === 'text' ? { text: e.text, at: e.points[0] } : { lengthMm: round(entityLength(e)), from: e.points[0], to: e.points.at(-1), ...through(e) }) }));
   return { units: project.units, name: project.name, entityCount: project.entities.length, pieceCount: (project.groups || []).length, bbox: box(bounds(project.entities)), pieces, looseEntities: loose,
     drafts: drafts.map(d => ({ id: d.id, schema: d.schema, input: d.input, pieceIds: d.groupIds })) };
 }

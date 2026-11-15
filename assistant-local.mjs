@@ -52,7 +52,7 @@ export const knownTerms = () => VOCABULARY.map(([key, names]) => ({ field: key, 
 const SEAM_FIELDS = new Set(['seamAllowance', 'hemAllowance']), HALF_HINT = new Set(['kneeCirc', 'hemCirc']);
 const escapeRe = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const NAMES = [...TERMS.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join('|');
-const NUM = '(\\d+(?:\\.\\d+)?(?:\\/\\d+)?)', UNIT = '(mm|毫米|cm|厘米|公分|英寸|吋|inch|in|"|″|市寸|寸|m|米|%)';
+const NUM = '(\\d+(?:\\.\\d+)?(?:[ \'-]\\d+\\/\\d+|\\/\\d+)?)', UNIT = '(mm|毫米|cm|厘米|公分|英寸|吋|inch|in|"|″|市寸|寸|m|米|%)';
 const UNITS = { mm: 1, 毫米: 1, cm: 10, 厘米: 10, 公分: 10, m: 1000, 米: 1000, 英寸: 25.4, 吋: 25.4, inch: 25.4, in: 25.4, '"': 25.4, '″': 25.4, 市寸: 100 / 3 };
 const OP_BEFORE = '(加长|加大|加宽|增加|增大|放大|放长|减少|减短|减小|缩短|缩小|收小|加|减|放|收)';
 const OP_AFTER = '(加长|加大|加宽|增加|增大|放大|放长|放宽|改大|改长|改宽|调大|减少|减短|减小|缩短|缩小|收小|改小|改短|改窄|调小|等于|加|减|放|收|多|少|长|短|大|小|改|调|设|定|\\+|-)';
@@ -72,9 +72,12 @@ class Reply extends Error { constructor(result) { super(result.reply); this.plan
 const plan = (reply, extra = {}) => ({ schema: PLAN_SCHEMA, planner: LOCAL_PLANNER.id, reply, steps: [], actions: [], assumptions: [], questions: [], choices: [], ...extra });
 const refuse = (reply, extra) => { throw new Reply(plan(reply, extra)); };
 const ask = (question, choices = [], extra = {}) => { throw new Reply(plan(question, { questions: [question], choices, ...extra })); };
-const cm = mm => String(Math.round(mm * 100) / 1000);
+// Replies are written in centimetres and rewritten for another unit afterwards; then the centimetres keep enough digits for an exact inch fraction.
+const cm = mm => String(bareUnit && bareUnit !== 'cm' ? Math.round(mm * 1e5) / 1e6 : Math.round(mm * 100) / 1000);
 const show = (key, value) => INFO[key]?.percent ? String(value) + '%' : cm(value) + ' cm';
 const tenth = value => Math.round(value * 10) / 10;
+// Drafting rules work in tenths of a millimetre. Free lines keep what was typed: 3/8 inch is 9.525 mm, not 9.5.
+const fine = value => Math.round(value * 1e4) / 1e4;
 const quoted = pieces => pieces.map(p => '“' + p.name + '”').join('、');
 const FIT = [{ id: 'view.fit' }];
 
@@ -83,12 +86,40 @@ export function normalize(text) {
   return [...String(text)].map(c => { const code = c.codePointAt(0); return code >= 0xff01 && code <= 0xff5e ? String.fromCodePoint(code - 0xfee0) : code === 0x3000 ? ' ' : c; }).join('')
     .replace(/[“”「」『』]/g, '"').replace(/[‘’]/g, "'").replace(/、/g, ',').replace(/[。!]/g, ';').replace(/\s+/g, ' ').trim().toLowerCase();
 }
-function toNumber(raw) { if (!raw.includes('/')) return Number(raw); const [a, b] = raw.split('/').map(Number); if (!b) refuse('分数“' + raw + '”的分母不能为 0。'); return a / b; }
-/** A length in millimetres. Without a unit the number is centimetres. */
+function toNumber(raw) {
+  const mixed = raw.match(/^(\d+(?:\.\d+)?)[ '-](\d+)\/(\d+)$/); // 1 3/8, 1-3/8 or, as ET writes it, 1'3/8
+  if (mixed) { if (!Number(mixed[3])) refuse('分数“' + raw + '”的分母不能为 0。'); return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]); }
+  if (!raw.includes('/')) return Number(raw); const [a, b] = raw.split('/').map(Number); if (!b) refuse('分数“' + raw + '”的分母不能为 0。'); return a / b; }
+// The unit of a number written without one, for the sentence in hand: the user's stored choice, or null before they have chosen.
+let bareUnit = null, sentenceInHand = '';
+const BARE = { cm: 10, inch: 25.4, mm: 1 }, UNIT_WORD = { cm: '厘米', inch: '英寸', mm: '毫米' };
+/** Millimetres per bare number. Asks once, with the sentence kept so that it is carried out after the answer. */
+function bareScale(raw) {
+  if (!bareUnit) ask('“' + raw + '”没有写单位，是厘米还是英寸？我会记住你的选择，以后不再问。', [{ label: '厘米', send: '按厘米' }, { label: '英寸', send: '按英寸' }], { pending: { text: sentenceInHand } });
+  return BARE[bareUnit];
+}
+/** A length in millimetres. A number without a unit is read in the unit the user chose. */
 function toMm(raw, unit) {
   if (unit === '寸') ask('“寸”是英寸还是市寸？请写“英寸”或“市寸”。');
   if (unit === '%') refuse('这里需要长度，不能用百分比“' + raw + '%”。');
-  return toNumber(raw) * (unit ? UNITS[unit] : 10);
+  return toNumber(raw) * (unit ? UNITS[unit] : bareScale(raw));
+}
+/** A millimetre value written in the user's unit; inches as sixteenths when they fit. */
+function inUnit(mm) {
+  if (bareUnit === 'mm') return String(Math.round(mm * 100) / 100);
+  if (bareUnit !== 'inch') return String(Math.round(mm * 100) / 1000);
+  const value = mm / 25.4, parts = Math.round(value * 16);
+  if (Math.abs(value * 16 - parts) > 1e-6) return String(Math.round(value * 1000) / 1000);
+  let top = Math.abs(parts) % 16, bottom = 16; const whole = Math.floor(Math.abs(parts) / 16); while (top && top % 2 === 0) { top /= 2; bottom /= 2; }
+  return (parts < 0 ? '-' : '') + (top ? (whole ? whole + ' ' : '') + top + '/' + bottom : String(whole));
+}
+/** The replies are written in centimetres; for another unit every “number cm” in them is rewritten. */
+function inChosenUnit(text) {
+  if (!bareUnit || bareUnit === 'cm') return text;
+  const n = '(-?\\d+(?:\\.\\d+)?)', word = UNIT_WORD[bareUnit], to = v => inUnit(Number(v) * 10);
+  return text.replace(new RegExp('\\(' + n + ', ' + n + '\\) 到 \\(' + n + ', ' + n + '\\) cm', 'g'), (_, a, b, c, d) => '(' + to(a) + ', ' + to(b) + ') 到 (' + to(c) + ', ' + to(d) + ') ' + word)
+    .replace(new RegExp('\\(' + n + ', ' + n + '\\) cm', 'g'), (_, a, b) => '(' + to(a) + ', ' + to(b) + ') ' + word)
+    .replace(new RegExp(n + '((?:(?:、| / | × )' + n.replace('(', '(?:') + ')*) cm', 'g'), (_, first, rest) => to(first) + rest.replace(/-?\d+(?:\.\d+)?/g, to) + ' ' + word);
 }
 
 // ---------------------------------------------------------------- field changes
@@ -145,7 +176,7 @@ function basisOf(sentence, context) { return BASIS_GARMENT.test(sentence) ? 'gar
 function resolveValue(change, notes, absolute) {
   const info = INFO[change.term.key]; let value = change.value;
   if (absolute && !info.percent && !change.unit && !change.term.garment && (value < info.min || value > info.max)) {
-    const asMm = toNumber(change.raw); if (asMm >= info.min && asMm <= info.max) { value = asMm; notes.push(change.term.name + ' ' + change.raw + ' 没写单位，按毫米理解（按厘米会超出范围）。'); }
+    const asMm = toNumber(change.raw); if (asMm >= info.min && asMm <= info.max) { value = asMm; notes.push(change.term.name + ' ' + change.raw + ' 没写单位，按毫米理解（按' + UNIT_WORD[bareUnit || 'cm'] + '会超出范围）。'); }
   }
   const rounded = tenth(value); if (Math.abs(rounded - value) > 1e-9) notes.push(change.term.name + ' ' + change.raw + (change.unit || '') + ' = ' + Number(value.toFixed(3)) + ' mm，按 ' + rounded + ' mm 处理（规则精度 0.1 mm）。');
   return rounded;
@@ -272,32 +303,32 @@ function planRectangle(sentence, scene, context, changes) {
   for (const value of [size.width, size.height]) if (!(value > 0 && value <= 5000)) refuse('矩形的边长须大于 0 且不超过 500 cm。');
   const name = shapeName(sentence) || '矩形', place = freePlace(scene, size.height), width = seamWidth(sentence, changes), asPiece = /(裁片|样片)/.test(sentence) || Boolean(width);
   if (width === undefined) refuse('请直接说缝份宽度，例如“缝份 1”。');
-  const steps = [{ type: 'draw.rectangle', parameters: { x: place.x, y: place.y, width: tenth(size.width), height: tenth(size.height), name }, as: 'shape' }];
+  const steps = [{ type: 'draw.rectangle', parameters: { x: place.x, y: place.y, width: fine(size.width), height: fine(size.height), name }, as: 'shape' }];
   if (asPiece) steps.push({ type: 'piece.create', parameters: { name, contourEntityIds: ['@shape'] }, as: 'piece' });
   if (width) steps.push({ type: 'seam.apply', parameters: { groupId: '@piece', width: checkSeam(width) } });
   return plan('画“' + name + '”：横向 ' + cm(size.width) + ' cm，纵向 ' + cm(size.height) + ' cm' + (asPiece ? '，建成裁片' : '') + (width ? '，四边加 ' + cm(width) + ' cm 缝份' : '') + '。放在现有图形右侧。',
-    { steps, actions: FIT, assumptions: size.how ? [size.how] : [], choices: asPiece ? [] : [{ label: '建成裁片并加 1 cm 缝份', send: '把刚才的图形建成裁片，叫' + name + '，缝份1' }] });
+    { steps, actions: FIT, assumptions: size.how ? [size.how] : [], choices: asPiece ? [] : [{ label: '建成裁片并加 1 cm 缝份', send: '把刚才的图形建成裁片，叫' + name + '，缝份1cm' }] });
 }
 function planLine(sentence, scene) {
   if (!/画/.test(sentence) || !/线/.test(sentence) || /(曲线|弧线|布纹)/.test(sentence)) return null;
   const coordinate = '\\(?\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*\\)?', through = sentence.match(new RegExp('从\\s*' + coordinate + '\\s*(?:到|至)\\s*' + coordinate + '\\s*' + UNIT + '?'));
   if (through) {
     if (through[5] === '寸' || through[5] === '%') refuse('坐标请用 mm、cm 或英寸。');
-    const scale = through[5] ? UNITS[through[5]] : 10, [x1, y1, x2, y2] = through.slice(1, 5).map(v => tenth(Number(v) * scale));
+    const scale = through[5] ? UNITS[through[5]] : bareScale(through[1]), [x1, y1, x2, y2] = through.slice(1, 5).map(v => fine(Number(v) * scale));
     if (x1 === x2 && y1 === y2) refuse('直线的两个端点不能重合。');
     return plan('画直线：从 (' + cm(x1) + ', ' + cm(y1) + ') 到 (' + cm(x2) + ', ' + cm(y2) + ') cm，长 ' + cm(Math.hypot(x2 - x1, y2 - y1)) + ' cm。', { steps: [{ type: 'draw.line', parameters: { from: { x: x1, y: y1 }, to: { x: x2, y: y2 } } }], actions: FIT, assumptions: ['坐标 x 向右、y 向上。'] });
   }
   const length = sentence.match(LENGTH); if (!length) ask('这条线要多长？例如“画一条 30 cm 的横线”。');
-  const mm = tenth(toMm(length[1], length[2])), vertical = /(竖|垂直|纵)/.test(sentence), place = freePlace(scene, vertical ? mm : 0);
+  const mm = fine(toMm(length[1], length[2])), vertical = /(竖|垂直|纵)/.test(sentence), place = freePlace(scene, vertical ? mm : 0);
   if (!(mm > 0 && mm <= 5000)) refuse('线长须大于 0 且不超过 500 cm。');
-  return plan('画一条 ' + cm(mm) + ' cm 的' + (vertical ? '竖线' : '横线') + '，放在现有图形右侧。', { steps: [{ type: 'draw.line', parameters: { from: { x: place.x, y: place.y }, to: vertical ? { x: place.x, y: tenth(place.y + mm) } : { x: tenth(place.x + mm), y: place.y } } }],
+  return plan('画一条 ' + cm(mm) + ' cm 的' + (vertical ? '竖线' : '横线') + '，放在现有图形右侧。', { steps: [{ type: 'draw.line', parameters: { from: { x: place.x, y: place.y }, to: vertical ? { x: place.x, y: fine(place.y + mm) } : { x: fine(place.x + mm), y: place.y } } }],
     actions: FIT, assumptions: /(横|水平|竖|垂直|纵)/.test(sentence) ? [] : ['没有说方向，按横线画。'] });
 }
 function planText(sentence, scene, context, original) {
   const m = original.match(/写(?:上|下|字|文字)*\s*[:：]?\s*["“”'‘’「]([^"“”'‘’」]{1,200})["“”'‘’」]/); if (!m) return null;
-  const named = namedPieces(sentence, scene, context), size = sentence.match(new RegExp('字高\\s*' + NUM + '\\s*' + UNIT + '?')), height = size ? tenth(toMm(size[1], size[2])) : 8;
+  const named = namedPieces(sentence, scene, context), size = sentence.match(new RegExp('字高\\s*' + NUM + '\\s*' + UNIT + '?')), height = size ? fine(toMm(size[1], size[2])) : 8;
   if (!(height > 0 && height <= 1000)) refuse('字高须大于 0 且不超过 100 cm。');
-  const piece = named.pieces[0], at = piece?.bbox ? { x: tenth((piece.bbox.minX + piece.bbox.maxX) / 2), y: tenth((piece.bbox.minY + piece.bbox.maxY) / 2) } : freePlace(scene, height);
+  const piece = named.pieces[0], at = piece?.bbox ? { x: fine((piece.bbox.minX + piece.bbox.maxX) / 2), y: fine((piece.bbox.minY + piece.bbox.maxY) / 2) } : freePlace(scene, height);
   return plan('写文字“' + m[1] + '”，字高 ' + cm(height) + ' cm，' + (piece ? '放在“' + piece.name + '”中间' : '放在现有图形右侧') + '。', { steps: [{ type: 'draw.text', parameters: { text: m[1], at, height } }],
     actions: piece ? [] : FIT, assumptions: piece ? ['文字只是放在裁片范围内，还没有编入这个裁片。'] : [] });
 }
@@ -314,12 +345,93 @@ function planPieceFromLines(sentence, scene, context, changes) {
   return plan('把 ' + lines.length + ' 条线建成裁片“' + name + '”' + (texts.length ? '，带上 ' + texts.length + ' 条文字' : '') + '，自动加一条竖直布纹线' + (width ? '，各边加 ' + cm(width) + ' cm 缝份' : '') + '。', { steps });
 }
 
+// ---------------------------------------------------------------- drafting constructions on selected lines
+const HEADINGS = { 上: { x: 0, y: 1 }, 下: { x: 0, y: -1 }, 左: { x: -1, y: 0 }, 右: { x: 1, y: 0 } };
+/** Lines an instruction can be about: loose lines and the outline edges of pieces, with their end points. */
+function drawnLines(scene) {
+  const lines = (scene.looseEntities || []).filter(e => e.kind !== 'text').map(e => ({ id: e.id, name: e.name, kind: e.kind, from: e.from, to: e.to }));
+  for (const piece of scene.pieces || []) for (const edge of piece.contour || []) if (edge.from && edge.to) lines.push({ id: edge.entityId, name: edge.name, kind: edge.kind, from: edge.from, to: edge.to });
+  return lines;
+}
+/** The lines meant by "选中的线" or "它": the canvas selection, otherwise what the last plan drew. */
+function meantLines(scene, context, howMany) {
+  const byId = new Map(drawnLines(scene).map(l => [l.id, l])), pick = ids => (ids || []).map(id => byId.get(id)).filter(Boolean);
+  let lines = pick(context.selection?.entityIds); if (!lines.length) lines = pick(context.last?.entityIds);
+  if (lines.length !== howMany) refuse('这句话需要先在画布上选中' + (howMany === 1 ? '一条线' : ' ' + howMany + ' 条直线') + '，现在选中了 ' + lines.length + ' 条。请用选择工具选好，再说一遍；也可以打开左侧的“画线”工具直接点选。');
+  return lines;
+}
+const headingIn = sentence => { const m = sentence.match(/(?:向|往|朝)(上|下|左|右)|(上|下|左|右)(?:方|边|侧|面)/); return m ? m[1] || m[2] : null; };
+const middle = l => ({ x: (l.from.x + l.to.x) / 2, y: (l.from.y + l.to.y) / 2 });
+const beside = (l, heading) => { const m = middle(l), v = HEADINGS[heading]; return { x: fine(m.x + v.x * 10000), y: fine(m.y + v.y * 10000) }; };
+const flat = l => Math.abs(l.to.x - l.from.x) >= Math.abs(l.to.y - l.from.y);
+function askHeading(sentence, l, question) { const options = flat(l) ? ['上', '下'] : ['左', '右']; ask(question, options.map(h => ({ label: '向' + h, send: sentence + ' 向' + h }))); }
+/** Which end of a line "左端" and the like means: start or end. */
+function endOf(l, word) {
+  const axis = word === '左' || word === '右' ? 'x' : 'y', more = word === '右' || word === '上';
+  if (Math.abs(l.from[axis] - l.to[axis]) < 1e-6) refuse('这条线的两端' + (axis === 'x' ? '左右' : '上下') + '对齐，分不出' + word + '端。请改说' + (axis === 'x' ? '上端或下端' : '左端或右端') + '。');
+  return (l.from[axis] > l.to[axis]) === more ? 'start' : 'end';
+}
+function planConstruct(sentence, scene, context, changes) {
+  const quote = l => '“' + l.name + '”';
+  if (/平行/.test(sentence)) {
+    const [base] = meantLines(scene, context, 1), counted = sentence.match(/(\d+)\s*条/), rest = counted ? sentence.replace(counted[0], ' ') : sentence, m = rest.match(LENGTH);
+    if (!m) ask('平行线离原线多远？例如“向下平行 3”（厘米）。');
+    const distance = fine(toMm(m[1], m[2])), heading = headingIn(sentence), count = counted ? Number(counted[1]) : 1;
+    if (!(distance > 0 && distance <= 5000)) refuse('平行距离须大于 0 且不超过 500 cm。');
+    if (!(count >= 1 && count <= 50)) refuse('一次最多作 50 条平行线。');
+    if (!heading) askHeading(sentence, base, '平行线放在' + quote(base) + '的哪一侧？');
+    return plan('在' + quote(base) + '的' + heading + '侧作平行线，间距 ' + cm(distance) + ' cm' + (count > 1 ? '，共 ' + count + ' 条' : '') + '。', { steps: [{ type: 'draw.parallel', parameters: { entityId: base.id, distance, toward: beside(base, heading), ...(count > 1 ? { count } : {}) } }] });
+  }
+  if (/等分|平分|分成/.test(sentence)) {
+    const m = sentence.match(/(\d+)\s*(?:等分|等份|份|段)/) || sentence.match(/(?:等分|平分)(?:成|为)?\s*(\d+)/); if (!m) ask('要分成几份？例如“把选中的线分成 4 份”。');
+    const [base] = meantLines(scene, context, 1), count = Number(m[1]); if (!(count >= 2 && count <= 100)) refuse('等分数须在 2 到 100 之间。');
+    return plan('把' + quote(base) + '按长度分成 ' + count + ' 份，在 ' + (count - 1) + ' 个分点各画一条短标记，标记的中点就是分点。', { steps: [{ type: 'draw.divide', parameters: { entityId: base.id, count } }] });
+  }
+  if (/圆角/.test(sentence)) {
+    const m = sentence.match(LENGTH); if (!m) ask('圆角半径多大？例如“选中的两条线做圆角 2”（厘米）。');
+    const [first, second] = meantLines(scene, context, 2), radius = fine(toMm(m[1], m[2])); if (!(radius > 0)) refuse('圆角半径须大于 0。');
+    return plan('用半径 ' + cm(radius) + ' cm 的圆弧连接' + quote(first) + '和' + quote(second) + '的转角，两条线各改到切点。', { steps: [{ type: 'line.fillet', parameters: { firstEntityId: first.id, secondEntityId: second.id, radius } }] });
+  }
+  if (/角连接|连成角|接成角|连成一个角/.test(sentence)) {
+    const [first, second] = meantLines(scene, context, 2);
+    return plan('把' + quote(first) + '和' + quote(second) + '延长或剪短到它们的交点。', { steps: [{ type: 'line.cornerJoin', parameters: { firstEntityId: first.id, secondEntityId: second.id } }] });
+  }
+  if (/圆/.test(sentence) && /(半径|直径)/.test(sentence) && /(画|作|加)/.test(sentence)) {
+    const m = sentence.match(new RegExp('(半径|直径)\\s*(?:为|是|=)?\\s*' + NUM + '\\s*' + UNIT + '?')); if (!m) ask('圆的半径多大？例如“画一个半径 5 的圆”。');
+    const radius = fine(toMm(m[2], m[3]) / (m[1] === '直径' ? 2 : 1)); if (!(radius > 0 && radius <= 5000)) refuse('半径须大于 0 且不超过 500 cm。');
+    const given = sentence.match(/圆心\s*(?:在|为)?\s*\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?/), corner = freePlace(scene, 2 * radius);
+    const center = given ? { x: fine(Number(given[1]) * bareScale(given[1])), y: fine(Number(given[2]) * bareScale(given[2])) } : { x: fine(corner.x + radius), y: fine(corner.y + radius) };
+    return plan('画一个半径 ' + cm(radius) + ' cm 的圆，' + (given ? '圆心在 (' + cm(center.x) + ', ' + cm(center.y) + ') cm。' : '放在现有图形右侧。'), { steps: [{ type: 'draw.circle', parameters: { center, radius } }], actions: FIT });
+  }
+  if (/垂线|垂直线/.test(sentence)) {
+    const [base] = meantLines(scene, context, 1), placed = sentence.match(new RegExp('距?(左|右|上|下)端\\s*' + NUM + '?\\s*' + UNIT + '?')), rest = placed ? sentence.replace(placed[0], ' ') : sentence, m = rest.match(LENGTH);
+    if (!m) ask('垂线画多长？例如“在选中的线中点作垂线 5，向上”。');
+    const where = /中点|中间|正中/.test(sentence) ? { ratio: .5 } : placed ? { from: endOf(base, placed[1]), distance: placed[2] ? fine(toMm(placed[2], placed[3])) : 0 } : null;
+    if (!where) ask('垂线从线上的哪个位置起？', [{ label: '中点', send: sentence + ' 中点' }, ...(flat(base) ? ['左', '右'] : ['上', '下']).map(h => ({ label: h + '端', send: sentence + ' ' + h + '端' }))]);
+    const heading = headingIn(rest), length = fine(toMm(m[1], m[2])); if (!(length > 0 && length <= 5000)) refuse('垂线长度须大于 0 且不超过 500 cm。');
+    if (!heading) askHeading(sentence, base, '垂线朝' + quote(base) + '的哪一侧画？');
+    const spot = where.ratio !== undefined ? '中点' : '距' + placed[1] + '端 ' + cm(where.distance) + ' cm 处';
+    return plan('在' + quote(base) + '的' + spot + '向' + heading + '作垂线，长 ' + cm(length) + ' cm。', { steps: [{ type: 'draw.perpendicular', parameters: { entityId: base.id, at: where, length, toward: beside(base, heading) } }] });
+  }
+  if (!changes.length && /(加长|延长|放长|缩短|改短|剪短|长度改|线长改|改成长|改为长)/.test(sentence) && /(线|选中|它|这条)/.test(sentence)) {
+    const [base] = meantLines(scene, context, 1), ended = sentence.match(/(左|右|上|下)端/), rest = ended ? sentence.replace(ended[0], ' ') : sentence, m = rest.match(LENGTH);
+    if (!m) ask('要加长或缩短多少，或者改成多长？例如“把选中的线右端加长 2”。');
+    if (base.kind !== 'line') refuse(quote(base) + '不是直线。长度调整目前只用于直线。');
+    if (!ended) ask('调整' + quote(base) + '的哪一端？', (flat(base) ? ['左', '右'] : ['上', '下']).map(h => ({ label: h + '端', send: sentence + ' ' + h + '端' })));
+    const value = fine(toMm(m[1], m[2])), absolute = /(长度改|线长改|改成长|改为长|改成|改为|改到)/.test(sentence), shorter = /(缩短|改短|剪短)/.test(sentence), end = endOf(base, ended[1]);
+    if (!(value > 0)) refuse('数值须大于 0。');
+    return plan(absolute ? '移动' + quote(base) + '的' + ended[1] + '端，使线长为 ' + cm(value) + ' cm。' : '把' + quote(base) + '的' + ended[1] + '端' + (shorter ? '缩短 ' : '加长 ') + cm(value) + ' cm。',
+      { steps: [{ type: 'line.setLength', parameters: { entityId: base.id, end, ...(absolute ? { length: value } : { delta: shorter ? -value : value }) } }] });
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- piece operations
 function planPieceOperation(sentence, scene, context) {
   const bare = withoutNames(sentence, scene), number = bare.match(LENGTH), draftNote = (pieces, verb) => pieces.some(p => p.draftId) ? [verb + '后这套纸样被视为手工修改，再按尺寸重算时需要确认丢弃。'] : [];
   if (/(移动|平移|移|挪)/.test(sentence) && /(左|右|上|下)/.test(bare)) {
     if (!number) ask('要移动多少？例如“向右移动 10”（厘米）。');
-    const distance = tenth(toMm(number[1], number[2])), pieces = targetPieces(sentence, scene, context, '要移动哪个裁片？');
+    const distance = fine(toMm(number[1], number[2])), pieces = targetPieces(sentence, scene, context, '要移动哪个裁片？');
     if (!(distance > 0 && distance <= 100000)) refuse('移动距离须大于 0。');
     const dx = /右/.test(bare) ? distance : /左/.test(bare) ? -distance : 0, dy = /上/.test(bare) ? distance : /下/.test(bare) ? -distance : 0, word = [dx > 0 && '右', dx < 0 && '左', dy > 0 && '上', dy < 0 && '下'].filter(Boolean).join('');
     return plan('把' + quoted(pieces) + '向' + word + '移动 ' + cm(distance) + ' cm。', { steps: pieces.map(p => ({ type: 'piece.move', parameters: { groupId: p.id, dx, dy } })) });
@@ -351,16 +463,16 @@ function planPieceOperation(sentence, scene, context) {
 
 // ---------------------------------------------------------------- other replies
 export const EXAMPLES = [
-  { label: '按尺寸画直筒裤', send: '画一条直筒裤，腰围76 臀围96 裤长102' },
-  { label: '裤长加 2', send: '裤长加2' },
-  { label: '缝份改成 1.2', send: '缝份改成1.2' },
-  { label: '画后袋并加缝份', send: '画一个后袋 16x18，建成裁片，缝份1' },
+  { label: '按尺寸画直筒裤', send: '画一条直筒裤，腰围76cm 臀围96cm 裤长102cm' },
+  { label: '裤长加 2 cm', send: '裤长加2cm' },
+  { label: '缝份改成 1.2 cm', send: '缝份改成1.2cm' },
+  { label: '画后袋并加缝份', send: '画一个后袋 16x18cm，建成裁片，缝份1cm' },
 ];
-const HELP = '我可以按一句话完成下面这些事。每次先给出计划，你确认后才改图，随时可以撤销：\n· 按尺寸生成直筒裤：“画一条直筒裤，腰围76 臀围96 裤长102”\n· 改尺寸重算：“裤长加2，腰围减1”“脚口改成40”“后翘2.5”\n· 缝份：“缝份改成1.2”“脚口折边4”“给后袋加1cm缝份”“去掉后袋的缝份”\n· 画部件：“画一个后袋 16x18，建成裁片，缝份1”“画一条30cm的横线”\n· 裁片：“把后袋向右移动10”“复制后袋”“后袋旋转90度”“删除后袋”“把选中的线建成裁片”\n· 其他：“撤销”“重做”“保存为PRJ”“全图显示”“现在的尺寸”\n没写单位的数字按厘米理解，也可以写 mm、cm、英寸。目前用的是本机内置指令，只认识上面这类说法；接入大模型服务后可以理解更自由的描述。';
+const HELP = '我可以按一句话完成下面这些事。每次先给出计划，你确认后才改图，随时可以撤销：\n· 按尺寸生成直筒裤：“画一条直筒裤，腰围76 臀围96 裤长102”\n· 改尺寸重算：“裤长加2，腰围减1”“脚口改成40”“后翘2.5”\n· 缝份：“缝份改成1.2”“脚口折边4”“给后袋加1cm缝份”“去掉后袋的缝份”\n· 画部件：“画一个后袋 16x18，建成裁片，缝份1”“画一条30cm的横线”\n· 裁片：“把后袋向右移动10”“复制后袋”“后袋旋转90度”“删除后袋”“把选中的线建成裁片”\n· 选中的线：“向下平行3，2条”“分成4份”“在中点作垂线5，向上”“右端加长2”；选中两条直线后“做圆角2”“角连接”；“画一个半径5的圆”\n· 其他：“撤销”“重做”“保存为PRJ”“全图显示”“现在的尺寸”\n数字可以带单位（mm、cm、英寸，英寸可以写 3/8、1 3/8）；没写单位的数字第一次出现时，我会问是厘米还是英寸并记住，说“按厘米”或“按英寸”可以更换。目前用的是本机内置指令，只认识上面这类说法；接入大模型服务后可以理解更自由的描述。';
 function describe(scene) {
   const lines = [];
-  for (const draft of scene.drafts || []) lines.push('按尺寸生成的直筒裤：' + ['waist', 'hip', 'thigh', 'hipDepth', 'crotchDepth', 'kneeDepth', 'length'].map(key => INFO[key].label + ' ' + cm(draft.input.measurements[key])).join('，') + ' cm；' +
-    ['waistEase', 'hipEase', 'kneeCirc', 'hemCirc', 'seamAllowance', 'hemAllowance'].map(key => INFO[key].label + ' ' + cm(draft.input.rules[key])).join('，') + ' cm。');
+  for (const draft of scene.drafts || []) lines.push('按尺寸生成的直筒裤：' + ['waist', 'hip', 'thigh', 'hipDepth', 'crotchDepth', 'kneeDepth', 'length'].map(key => INFO[key].label + ' ' + cm(draft.input.measurements[key]) + ' cm').join('，') + '；' +
+    ['waistEase', 'hipEase', 'kneeCirc', 'hemCirc', 'seamAllowance', 'hemAllowance'].map(key => INFO[key].label + ' ' + cm(draft.input.rules[key]) + ' cm').join('，') + '。');
   for (const piece of scene.pieces || []) lines.push('裁片“' + piece.name + '”：' + (piece.bbox ? '净样外框 ' + cm(piece.bbox.maxX - piece.bbox.minX) + ' × ' + cm(piece.bbox.maxY - piece.bbox.minY) + ' cm，' : '') + (piece.seam ? '缝份 ' + piece.seam.widthsMm.map(cm).join(' / ') + ' cm' : '没有缝份') + '。');
   if (scene.looseEntities?.length) lines.push('另有 ' + scene.looseEntities.length + ' 个不属于裁片的图元。');
   return lines.length ? lines.join('\n') : '画布是空的。可以说“画一条直筒裤，腰围76 臀围96 裤长102”。';
@@ -393,12 +505,29 @@ function planSentence(sentence, scene, context, original) {
   const { changes, rest } = extractChanges(sentence);
   return planText(sentence, scene, context, original) || planRectangle(sentence, scene, context, changes) || planPieceFromLines(sentence, scene, context, changes) || planSeam(sentence, scene, context, changes)
     || (changes.length || NEW_PANTS.test(sentence) ? planDraft(sentence, scene, context, changes, rest) : null)
-    || planLine(sentence, scene) || planPieceOperation(sentence, scene, context) || unfinished(sentence, scene)
+    || planConstruct(sentence, scene, context, changes) || planLine(sentence, scene) || planPieceOperation(sentence, scene, context) || unfinished(sentence, scene)
     || plan('这句话我还不能执行。目前用的是本机内置指令，只认识固定的说法；说“帮助”可以看到全部例子。接入大模型服务后可以理解更自由的描述。', { choices: EXAMPLES.slice(0, 3), unrecognised: true });
 }
 /** Plan one user instruction against the current canvas. Never throws for bad input; the reply explains. */
-export function planLocally({ text, scene, context = {} }) {
-  const original = String(text ?? '').trim(); let source = normalize(original);
+export function planLocally(request) {
+  const chosen = request?.context?.preferences?.lengthUnit; bareUnit = BARE[chosen] ? chosen : null; sentenceInHand = String(request?.text ?? '').trim();
+  const result = planInUnit(request);
+  return { ...result, reply: inChosenUnit(result.reply), assumptions: result.assumptions.map(inChosenUnit), questions: result.questions.map(inChosenUnit), choices: result.choices.map(choice => ({ ...choice, label: inChosenUnit(choice.label) })) };
+}
+const UNIT_ANSWER = /^(?:按|用|都按|都用|单位|单位用|单位是|是)?(厘米|公分|cm|英寸|吋|inch|毫米|mm)$/, UNIT_ONCE = /^按(厘米|公分|cm|英寸|吋|inch|毫米|mm)[:：,，]\s*(.+)$/;
+const unitNamed = word => (/厘米|公分|cm/.test(word) ? 'cm' : /毫米|mm/.test(word) ? 'mm' : 'inch');
+function planInUnit({ text, scene, context = {} }) {
+  let original = String(text ?? '').trim(), source = normalize(original);
+  // “按英寸：……” reads one sentence in another unit without changing the stored choice
+  const once = source.match(UNIT_ONCE); if (once) { bareUnit = unitNamed(once[1]); source = once[2]; original = original.replace(/^[^:：,，]*[:：,，]\s*/, ''); sentenceInHand = original; }
+  const answer = source.match(UNIT_ANSWER);
+  if (answer) {
+    const unit = unitNamed(answer[1]), pending = context.pending?.text; bareUnit = unit;
+    if (!pending) return plan('好的，之后没写单位的数字都按' + UNIT_WORD[unit] + '理解。', { remember: { lengthUnit: unit } });
+    sentenceInHand = pending;
+    const result = planInUnit({ text: pending, scene, context: { ...context, pending: null, preferences: { ...context.preferences, lengthUnit: unit } } });
+    return { ...result, remember: { ...(result.remember || {}), lengthUnit: unit }, assumptions: ['没写单位的数字按' + UNIT_WORD[unit] + '理解；说“按' + (unit === 'inch' ? '厘米' : '英寸') + '”可以更换。', ...result.assumptions] };
+  }
   if (!source) return plan('请输入要做的事，例如“画一条直筒裤，腰围76 臀围96 裤长102”。', { choices: EXAMPLES.slice(0, 2) });
   if (source.length > 500) return plan('这句话太长了，请分成几句发送。');
   if (DISCARD.test(source)) { source = source.replace(DISCARD, ' ').replace(/^[\s,]+|[\s,]+$/g, ''); context = { ...context, discardManualEdits: true }; }

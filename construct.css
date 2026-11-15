@@ -1,0 +1,31 @@
+/* Drafting tools: a panel floating over the top left of the canvas. */
+.construct-panel{position:absolute;top:12px;left:12px;width:min(318px,calc(100% - 24px));max-height:calc(100% - 24px);overflow:auto;background:#fff;border:1px solid #cfd8cf;border-radius:10px;box-shadow:0 10px 30px #1d2b2424;z-index:29;font-size:12px;color:#253b35}
+.construct-panel[hidden]{display:none}
+.construct-panel header{height:auto;display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e3e8e1;background:#f6f8f4}
+.construct-panel header strong{font-size:13px;margin-right:auto}
+.construct-panel header button{padding:4px 8px;font-size:12px}
+.construct-unit{display:flex;align-items:center;gap:4px;color:#66796e;white-space:nowrap}
+.construct-unit select{padding:3px 4px;font-size:12px;background:#fff;border:1px solid #d5ddd4;border-radius:4px}
+.construct-tools{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px 4px}
+.construct-tools button{padding:6px 2px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.construct-tools button.active{background:#2e674d;color:#fff;border-color:#2e674d}
+.construct-hint{margin:4px 10px 6px;color:#5d6f64;line-height:1.6}
+.construct-slots{display:flex;flex-direction:column;gap:4px;padding:0 10px}
+.construct-slot{text-align:left;padding:6px 8px;font-size:12px;white-space:normal;line-height:1.5;border-left:3px solid #c9d0c9;border-radius:4px}
+.construct-slot.filled{border-left-color:#4e8666}
+.construct-slot.active{border-left-color:#d08a2e;background:#fff7e9}
+.construct-targets{margin:0 0 2px;color:#5d6f64}
+.construct-fields{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px;padding:8px 10px 2px}
+.construct-fields:empty{display:none}
+.construct-fields label{display:flex;flex-direction:column;gap:3px;color:#55695e;min-width:0}
+.construct-fields input[type=number],.construct-fields select{width:100%;min-width:0;padding:6px 7px;border:1px solid #d5ddd4;border-radius:5px;background:#fff;font-variant-numeric:tabular-nums}
+.construct-fields label.construct-check{grid-column:1/-1;flex-direction:row;align-items:center;gap:6px}
+.construct-fields label.construct-check input{width:auto;margin:0}
+.construct-status{margin:6px 10px;padding:7px 8px;border-radius:5px;background:#f3f4ef;color:#556459;line-height:1.6;overflow-wrap:anywhere}
+.construct-status:empty{display:none}
+.construct-status[data-state=ready]{background:#e8f3e8;color:#2d6745}
+.construct-status[data-state=error]{background:#fff0ec;color:#9c5847}
+.construct-actions{display:flex;gap:8px;padding:2px 10px 10px}
+.construct-actions button{padding:7px 12px}
+#construct-tool.active,[data-tool=spline].active{background:#e3eee6}
+.dark-canvas .construct-panel{box-shadow:0 10px 30px #0008}
