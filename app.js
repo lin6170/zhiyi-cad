@@ -41,8 +41,9 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=46';
+import { createCadCommands } from './cad-commands.mjs?v=47';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
+import { createAssistantPanel } from './assistant-panel.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
 const $ = id => document.getElementById(id);
 const svg = $('canvas'), drawing = $('drawing'), overlay = $('overlay');
@@ -57,7 +58,7 @@ let prjExportSession = null;
 let prjEndpointSession = null;
 let prjLineSession = null;
 let recovery=null,recoverySuspended=false,recoveryFingerprint=null,recoveryHasRecord=false,projectRevision=0;
-let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null;
+let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null;
 let snapIndex=null,snapMatch=null,snapFailure=null,lastPointerWorld=null;
 let darkCanvas = false;
 let inspection = null, focusedInspection = null, focusedInspectionIssue = null;
@@ -667,14 +668,17 @@ function refreshControlEditor() {
     $('curve-info').textContent=entity.curve.degree+' 次样条 · '+points.length+' 个控制点\n弧长 '+result.value.toFixed(6)+' '+unit()+' · 积分误差估计 '+result.estimatedError.toExponential(2)+(result.converged?'':' · 尚未收敛')+'\n显示容差 '+(entity.curve.samplingTolerance??.002)+' '+unit()+(entity.curveSamplingCapped?' · 采样已达上限':'');
   }else $('curve-info').textContent=points.length+' 个折线节点 · '+unit();
 }
+// The assistant panel floats over the right part of the canvas; fitted content stays in the part that is still visible.
+function fitWidth(){const covered=assistantPanel?.isOpen()?assistantPanel.element.offsetWidth+24:0;return svg.clientWidth-covered>=240?svg.clientWidth-covered:svg.clientWidth;}
 function fit(entities = project.entities) {
   snapMatch=null;snapFailure=null;
   if(tool==='marker'&&(!Array.isArray(entities)||entities===project.entities))entities=markerPanel.frame();
   if(tool==='plot'&&(!Array.isArray(entities)||entities===project.entities))entities=plotPanel.frame();
   const candidates=(Array.isArray(entities)?entities:project.entities).map(entity=>tool==='node'&&selected.has(entity.id)&&entity.curve?{...entity,points:entity.curve.controlPoints}:entity);
   const box = bounds(candidates); if (!box) return;
-  camera.scale = Math.max(.001, Math.min((svg.clientWidth - 100) / Math.max(box.width, 1), (svg.clientHeight - 100) / Math.max(box.height, 1), 20));
-  camera.x = svg.clientWidth / 2 - (box.minX + box.maxX) / 2 * camera.scale;
+  const viewWidth = fitWidth();
+  camera.scale = Math.max(.001, Math.min((viewWidth - 100) / Math.max(box.width, 1), (svg.clientHeight - 100) / Math.max(box.height, 1), 20));
+  camera.x = viewWidth / 2 - (box.minX + box.maxX) / 2 * camera.scale;
   camera.y = svg.clientHeight / 2 + (box.minY + box.maxY) / 2 * camera.scale; render();
 }
 function zoom(factor, center = { x: svg.clientWidth / 2, y: svg.clientHeight / 2 }) {
@@ -1069,7 +1073,7 @@ $('export').onclick=action(()=>{
 });
 function canReplace() { return !hasUnsavedWork() || confirm('当前工程有未保存的修改或绘图草稿。继续会替换当前画布，是否继续？'); }
 function loadProject(value, sourceSession=null, endpointSession=null, lineSession=null, rawSource=null) {
-  projectRevision++;pantsPanel?.reset();draftPanel?.reset();cadCommands?.clear();pantsSource=rawSource;
+  projectRevision++;pantsPanel?.reset();draftPanel?.reset();assistantPanel?.reset();cadCommands?.clear();pantsSource=rawSource;
   prjSavePanel.reset();prjNewPanel.reset();
   prjWritebackPanel.reset();prjExportSession=sourceSession;
   prjEndpointPanel.reset();prjEndpointSession=endpointSession;
@@ -1200,6 +1204,12 @@ Object.defineProperty(window,'zhiyiCAD',{value:cadCommands,writable:false,config
 draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRevision,download,reveal:()=>{refresh();fit();},savePrj:()=>{refresh();fit();prjNewPanel.open();}});
 const draftEntry=document.createElement('button');draftEntry.id='draft-open';draftEntry.textContent='尺寸自动制版';draftEntry.setAttribute('aria-haspopup','dialog');draftEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');draftPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(draftEntry);
 const draftWelcome=document.createElement('button');draftWelcome.id='welcome-draft';draftWelcome.textContent='输入尺寸，生成新纸样';draftWelcome.className='primary';draftWelcome.onclick=()=>draftEntry.click();$('welcome-open').before(draftWelcome);
+assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),getSelection:()=>[...selected],
+  prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>refresh(),
+  hostActions:{'view.fit':()=>{refresh();fit();},'file.savePrj':()=>{refresh();fit();prjNewPanel.open();},'file.exportDxf':()=>{$('export').click();},'file.saveProject':()=>{save();}}});
+const assistantEntry=document.createElement('button');assistantEntry.id='assistant-open';assistantEntry.textContent='AI 助手';assistantEntry.setAttribute('aria-pressed','false');assistantEntry.onclick=()=>{assistantPanel.toggle();assistantEntry.setAttribute('aria-pressed',String(assistantPanel.isOpen()));};document.querySelector('.file-actions').append(assistantEntry);
+$('assistant-close').addEventListener('click',()=>assistantEntry.setAttribute('aria-pressed','false'));
+const assistantWelcome=document.createElement('button');assistantWelcome.id='welcome-assistant';assistantWelcome.textContent='说一句话，让助手画';assistantWelcome.onclick=()=>{if(!assistantPanel.isOpen())assistantEntry.click();};$('welcome-open').before(assistantWelcome);
 pantsPanel=createPantsPanel({commands:cadCommands,getSource:()=>pantsSource,getProject:()=>project,getRevision:()=>projectRevision,setSession:s=>{pantsSession=s;},getSession:()=>pantsSession,download});
 const pantsEntry=document.createElement('button');pantsEntry.id='pants-open';pantsEntry.textContent='自动改裤长';pantsEntry.setAttribute('aria-haspopup','dialog');pantsEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');pantsPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(pantsEntry);
 const pantsSaveEntry=document.createElement('section');pantsSaveEntry.innerHTML='<h3>自动裤长改版</h3><p>为当前裤装指定前后片、膝线和裤脚，或载入已有规则；预览、应用和撤销后保存独立 PRJ。</p><button id="prj-save-pants">打开裤长改版</button>';$('prj-save-dialog').append(pantsSaveEntry);$('prj-save-pants').onclick=()=>{$('prj-save-dialog').close();pantsEntry.click();};

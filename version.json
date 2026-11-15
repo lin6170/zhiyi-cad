@@ -1,8 +1,8 @@
 {
-  "version": 46,
-  "base_publication_commit": "47b8d9be7e1166e728959d12c544cc7972fcc2d3",
+  "version": 47,
+  "base_publication_commit": "c5159d090878e70eaafb55e4c5e88987b53e74d0",
   "hosting": "GitHub Pages",
-  "change": "Complete new ET PRJ export for generated or millimetre patterns: pieces, curves, internal lines, grain, text and per-edge seam allowances",
-  "validation": "ET 2017 native open, unchanged re-save, native save/reopen, new line plus update-all-seams, save/reopen twice; browser export byte-identical to an independent computation; editor and PRJ regressions",
-  "limits": "Verified with ET 2017 and two straight-pants measurement sets only; no notches, grading, extra contours or imported-ET entities; demonstration drafting rules await patternmaker review"
+  "change": "In-page drawing assistant with an offline instruction parser; command catalogue of 21 validated commands with multi-step plans; redraft from changed measurements. Published together with v46 (complete new ET PRJ export)",
+  "validation": "Node tests, 11 real-browser suites, and an ET 2017 round trip of the PRJ that the assistant-drawn pattern produced in the browser: open, unchanged re-save, native save/reopen, new line plus update-all-seams, save/reopen twice",
+  "limits": "No model service is included and no key is shipped; the offline parser understands fixed phrases only; drafting from measurements covers the straight-pants demonstration rules, which await patternmaker review"
 }
