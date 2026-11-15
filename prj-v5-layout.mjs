@@ -1,11 +1,11 @@
 import {readV5Curve} from './prj-v5-curves.mjs';
 
-export function readV5References(bytes,parsed){
+export function readV5References(bytes,parsed,{verifiedPantsTemplate=false}={}){
   const fail=()=>{throw new Error('新版 PRJ：回存所需的曲线引用或边界不受支持。');};
   const m=parsed.metadata,roots=m.sizeVariants,ranges=m.unparsedFollowingRanges;
   if(m.layout!=='native-v5-7248'||roots?.length!==1)fail();
   const root=roots[0],end=ranges.find(r=>r.scope==='between-curves-and-pieces')?.offset;
-  if(root.flags===0x01)throw new Error('该 v5 母版变体目前支持导入查看；网页 PRJ 回存尚未验收，请保存工程或通过已验证的 ET 本机任务生成副本。');
+  if(root.flags===0x01&&!verifiedPantsTemplate)throw new Error('该 v5 母版变体的普通回存尚未验收；已验证裤装母版可使用“自动改裤长”，其他修改请保存工程。');
   const curves=parsed.entities.filter(e=>[2,4,23].includes(e.source?.recordKind));
   if(!Number.isInteger(end)||end>bytes.length||curves.length!==root.curveCount)fail();
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
@@ -25,7 +25,7 @@ export function readV5References(bytes,parsed){
     const directReferences=refs(),secondaryReferences=refs();
     if(cursor>limit)fail();
     return {entity,index:i+1,start,end:limit,tailOffset:cursor,direct:directReferences.indices,
-      secondary:secondaryReferences.indices,directReferences,secondaryReferences};
+      secondary:secondaryReferences.indices,directReferences,secondaryReferences,geometry:geometry.storageGeometry};
   });
 }
 

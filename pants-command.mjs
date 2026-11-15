@@ -4,6 +4,10 @@ import {pathMetrics} from './path-metrics.mjs';
 import {reconstructSpline} from './spline.mjs';
 
 export const PANTS_COMMAND='pattern.extendPantsHem';
+export function validatePantsDelta(deltaMm){
+  if(typeof deltaMm!=='number'||!Number.isFinite(deltaMm)||deltaMm===0||Math.abs(deltaMm)>100||Math.abs(deltaMm*10-Math.round(deltaMm*10))>1e-7)throw Error('请输入 -100 至 +100 mm 的非零数值，最多一位小数；正数加长，负数缩短。');
+  return deltaMm;
+}
 const copy=x=>JSON.parse(JSON.stringify(x));
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const pointAt=(curve,t)=>evaluateBSpline(curve.controlPoints,curve.knots,t,curve.degree);
@@ -16,7 +20,8 @@ function closestParameter(curve,p){
   return (a+b)/2;
 }
 export function planPantsGeometry(project,profile,{deltaMm=20}={}){
-  if(profile?.schema!=='zhiyi-web-pants-profile/v1'||profile.mmPerSourceUnit!==10||profile.validatedDeltaMm!==20||deltaMm!==20||profile.pieces?.length!==2)throw Error('当前只支持已验收母版的裤脚垂直加长 20 mm。');
+  validatePantsDelta(deltaMm);
+  if(!['zhiyi-web-pants-profile/v1','zhiyi-web-pants-profile/v2'].includes(profile?.schema)||profile.mmPerSourceUnit!==10||profile.pieces?.length!==2)throw Error('母版规则不受支持。');
   if(project.units!=='unknown'&&project.units!==undefined)throw Error('请重新打开原始 PRJ；当前单位或比例已经改变。');
   const next=copy(project),byId=new Map(project.entities.map(e=>[e.source?.sourceId,e])),changed=new Map(),dy=-deltaMm/profile.mmPerSourceUnit;
   const get=id=>{const e=byId.get(id);if(!e?.curve||e.source.recordKind!==4||e.source.modified)throw Error('母版曲线缺失或已经改变，请重新打开原始 PRJ。');return e;};
@@ -36,6 +41,7 @@ export function planPantsGeometry(project,profile,{deltaMm=20}={}){
       const e=get(side.boundaryId),fit=copy(e.source.fitPoints);
       if(fit.length!==3||!same(e.source.controlPoints[0],e.source.controlPoints[1])||!same(e.source.controlPoints.at(-1),e.source.controlPoints.at(-2)))throw Error('下段侧缝结构不受支持。');
       fit.at(-1).y=Math.fround(fit.at(-1).y+dy);
+      if(fit[1].y-fit.at(-1).y<5)throw Error('缩短后裤脚过于接近下段定位点，请减少缩短量。');
       const geometry=fitClampedSpline(fit),after=changedSpline(e,geometry);
       changed.set(side.boundaryId,{before:e,after,geometry,mode:'refit'});
       const seam=get(side.seamId),oldParameters=fitParameters(e.source.fitPoints);
@@ -53,5 +59,5 @@ export function planPantsGeometry(project,profile,{deltaMm=20}={}){
   if(changed.size!==22)throw Error('预期 22 条关联线参与改版，实际数量不符。');
   next.entities=next.entities.map(e=>changed.get(e.source?.sourceId)?.after||e);
   for(const m of measurements)if(Math.abs(m.hemWidthAfterMm-m.hemWidthBeforeMm)>.001)throw Error('脚口宽度校验失败。');
-  return {project:next,changes:[...changed.values()],measurements,summary:{operation:PANTS_COMMAND,deltaMm,changedEntities:changed.size,pieces:measurements.map(m=>m.piece),unchanged:'膝线及以上、脚口宽、原文字和其他裁片',note:'按垂直方向加长，缝份随相邻侧缝同步；尺寸表不自动改写。'}};
+  return {project:next,changes:[...changed.values()],measurements,summary:{operation:PANTS_COMMAND,deltaMm,changedEntities:changed.size,pieces:measurements.map(m=>m.piece),unchanged:'膝线及以上、脚口宽、原文字和其他裁片',note:'按垂直方向加长或缩短，缝份随相邻侧缝同步；尺寸表不自动改写。'}};
 }

@@ -1,6 +1,6 @@
 import {validateProject} from './geometry.mjs';
 import {moveSelection} from './selection.mjs';
-import {PANTS_COMMAND} from './pants-command.mjs';
+import {PANTS_COMMAND,validatePantsDelta} from './pants-command.mjs';
 import {syncAllowances} from './seams.mjs';
 import {syncNotches} from './notches.mjs';
 import {syncSeamChecks} from './seam-checks.mjs';
@@ -21,7 +21,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     {type:'line.add',parameters:['points: [Point, Point]','units: mm | source']},
     {type:'selection.translate',parameters:['entityIds: string[]','dx: number','dy: number','units: mm | source']},
     {type:'line.moveEndpoint',parameters:['entityId: string','endpoint: 0 | 1','point: Point','units: mm | source']},
-    {type:PANTS_COMMAND,parameters:['deltaMm: 20'],requires:'verified private template profile'},
+    {type:PANTS_COMMAND,parameters:['deltaMm: -100..100, nonzero, 0.1 mm'],requires:'verified private template profile'},
     {type:'history.undo',parameters:[]},{type:'history.redo',parameters:[]}
   ],contract:'preview({schema,type,expectedRevision,parameters}) → apply(planId); failure leaves project/history unchanged'};}
   function read(){return {revision:getRevision(),name:getProject().name,units:getProject().units,entityCount:getProject().entities.length,groupCount:getProject().groups.length,...history()};}
@@ -31,7 +31,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     const before=copy(getProject()),p=command.parameters;let next=copy(before),summary={},measurements=[];
     const units=()=>{if(p.units!==(before.units==='mm'?'mm':'source'))throw Error('命令单位与工程不一致。');};
     if(command.type===PANTS_COMMAND){
-      keys(p,['deltaMm']);if(p.deltaMm!==20)throw Error('当前加长量仅支持 20 mm。');const session=getPantsSession();if(!session)throw Error('请先加载并核对本母版的改版规则。');
+      keys(p,['deltaMm']);validatePantsDelta(p.deltaMm);const session=getPantsSession();if(!session)throw Error('请先加载并核对本母版的改版规则。');
       const result=session.plan(before,p);next=result.project;summary=result.summary;measurements=result.measurements;
     }else if(command.type==='line.add'){
       keys(p,['points','units']);units();if(!Array.isArray(p.points)||p.points.length!==2||!p.points.every(point)||equal(p.points[0],p.points[1]))throw Error('直线需要两个不同的有效端点。');

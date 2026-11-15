@@ -24,8 +24,8 @@ export function readV5Curve(bytes,offset,index=0,end=bytes.length){
   if(u(offset+14)!==0||u(offset+41)!==0xffffffff)return null;
   const base=u(offset+45),extraFit=u(offset+49),extraControl=u(offset+53),extraScalar=u(offset+57);
   if(base<2||base>1000||extraFit>1000||extraControl>1000||extraScalar>10000||base+extraFit+2!==base+extraControl)return null;
-  let c=offset+61;const fit=[],control=[],scalars=[];
-  const read=(list,n)=>{if(c+n>end)throw Error('truncated');list.push(bytes.subarray(c,c+n));c+=n;};
+  let c=offset+61;const fit=[],control=[],scalars=[],locations=new Map([[fit,[]],[control,[]],[scalars,[]]]);
+  const read=(list,n)=>{if(c+n>end)throw Error('truncated');locations.get(list).push(c);list.push(bytes.subarray(c,c+n));c+=n;};
   const readers={f:()=>read(fit,12),c:()=>read(control,12),s:()=>read(scalars,4)};
   const order=['fcs','cfs','fsc','sfc','fcs','fcs','csf','fcs','fcs','fcs'];
   try{
@@ -44,6 +44,11 @@ export function readV5Curve(bytes,offset,index=0,end=bytes.length){
   record.entity.source.storage='v5-interleaved';
   record.pointOffset=null;record.pointEnd=c;record.geometryEnd=c;
   record.parametersIncluded=true;
+  record.storageGeometry={
+    fitPoints:{count:fit.length,offsets:locations.get(fit),points:record.entity.source.fitPoints},
+    controlPoints:{count:control.length,offsets:locations.get(control),points:record.entity.source.controlPoints},
+    parameterArray:{count:scalars.length,offsets:locations.get(scalars)}
+  };
   return record;
 }
 export function scanV5Curves(bytes,{start=100,end=bytes.length}={}){

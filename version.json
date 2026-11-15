@@ -1,8 +1,8 @@
 {
-  "version": 42,
-  "base_publication_commit": "f96d75416f73a8d9e4ca8c5cdd2a061e44aa5be9",
+  "version": 43,
+  "base_publication_commit": "6da24583b67617b9589c8ccdba2a4dcc8690d54e",
   "hosting": "GitHub Pages",
-  "change": "Unified CAD commands and direct browser pants hem +20 mm with comparison, atomic undo and guarded PRJ export",
-  "native_validation": "Actual browser bytes match ET-validated candidate: open/save/reopen, continue drawing, save/reopen and second save. Original file retained.",
-  "limits": "One fingerprinted private master and +20 mm vertical hem only. No LLM. New flag-0x01 v5 variant remains read-only for direct PRJ export."
+  "change": "Signed pants length input and repeated browser editing of ET-saved native v5",
+  "native_validation": "Six real browser exports opened, edited, saved and reopened in ET; all originals retained; web +35 to ET v5 to web -12.5 to ET verified.",
+  "limits": "Verified private 666/34 template. Nonzero signed 0.1 mm input within +/-100 mm per operation and cumulative. Not arbitrary v5 geometry; no LLM."
 }
