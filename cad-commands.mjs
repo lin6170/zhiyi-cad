@@ -11,7 +11,7 @@ import {findCommand,validateInput,commandSet,describeScene,COMMAND_SET_VERSION} 
 const copy=x=>JSON.parse(JSON.stringify(x));
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 // What a command can change, without the bookkeeping fields that validation and syncing rewrite.
-const fingerprint=p=>JSON.stringify([p.name,p.units,p.entities,p.groups,(p.seamAllowances||[]).map(r=>[r.id,r.baseEntityIds,r.outputIds.length,r.distance,r.widthMode,r.edgeWidths,r.join]),p.metadata?.parametricDrafts||null]);
+const fingerprint=p=>JSON.stringify([p.name,p.units,p.entities,p.groups,(p.seamAllowances||[]).map(r=>[r.id,r.baseEntityIds,r.outputIds.length,r.distance,r.widthMode,r.edgeWidths,r.join,r.corners||null]),p.metadata?.parametricDrafts||null]);
 const finite=n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=100000;
 const point=p=>p&&Object.keys(p).sort().join(',')==='x,y'&&finite(p.x)&&finite(p.y);
 function keys(object,allowed){if(!object||typeof object!=='object'||Array.isArray(object)||Object.keys(object).some(k=>!allowed.includes(k)))throw Error('命令参数不受支持。');}

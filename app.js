@@ -41,10 +41,11 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=49';
+import { createCadCommands } from './cad-commands.mjs?v=52';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
 import { createConstructPanel } from './construct-ui.mjs';
+import { createPrjEditablePanel } from './prj-editable-ui.mjs';
 import { fitClampedSpline } from './fit-spline.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
 const $ = id => document.getElementById(id);
@@ -60,7 +61,7 @@ let prjExportSession = null;
 let prjEndpointSession = null;
 let prjLineSession = null;
 let recovery=null,recoverySuspended=false,recoveryFingerprint=null,recoveryHasRecord=false,projectRevision=0;
-let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null,constructPanel=null;
+let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null,constructPanel=null,prjEditablePanel=null;
 let snapIndex=null,snapMatch=null,snapFailure=null,lastPointerWorld=null;
 let darkCanvas = false;
 let inspection = null, focusedInspection = null, focusedInspectionIssue = null;
@@ -222,7 +223,7 @@ function hit(p) {
 function entityColor(entity) {
   if(entity.notchFrom&&(project.notches||[]).find(recipe=>recipe.id===entity.notchFrom)?.status!=='current')return '#e56b60';
   if(entity.derivedFrom&&(project.seamAllowances||[]).find(recipe=>recipe.id===entity.derivedFrom)?.status!=='current')return '#e56b60';
-  const stored = entity.source?.color;
+  const stored = entity.color || entity.source?.color;
   if (Array.isArray(stored) && stored.length === 3 && stored.every(value => Number.isInteger(value) && value >= 0 && value <= 255)) {
     if (!darkCanvas && stored.every(value => value > 200)) return '#35483f';
     return 'rgb(' + stored.join(',') + ')';
@@ -262,7 +263,7 @@ function render() {
       stroke: color,
       'stroke-width': active ? 2 : 1.25, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'
     };
-    if (entity.source?.lineStyle === 1) attrs['stroke-dasharray'] = '4 3';
+    if (entity.source?.lineStyle === 1 || entity.lineStyle === 1) attrs['stroke-dasharray'] = '4 3';
     if(entity.derivedFrom)attrs['stroke-dasharray']='7 3';
     node('path', attrs, drawing);
     const arrowTips = [];
@@ -1019,7 +1020,10 @@ $('preview-seam').onclick=action(()=>{
   seamPreview=null;refreshSeamPanel();
   const base=selectedSeamBase();if(!base)throw new Error('请选择基准轮廓');
   try{
-    const options=seamOptions();seamPreview={...generateAllowance(project,base.entityIds,options),base,options};
+    // Corner treatments set with the seam corner command stay when the widths are changed in this panel.
+    const options=seamOptions(),existing=(project.seamAllowances||[]).find(item=>item.id===base.recipeId)||(project.seamAllowances||[]).find(item=>JSON.stringify(item.baseEntityIds)===JSON.stringify(base.entityIds));
+    if(existing?.corners?.length)options.corners=structuredClone(existing.corners);
+    seamPreview={...generateAllowance(project,base.entityIds,options),base,options};
     $('seam-status').textContent='预览 '+seamPreview.paths.length+' 条轮廓 · '+(seamPreview.config.distance>0?'向外 ':'向内 ')+(options.widthMode==='edges'?'逐边宽度':Math.abs(seamPreview.config.distance)+' mm')+'。'+(seamPreview.bridges.length?'计算时连接 '+seamPreview.bridges.length+' 处断点，最大 '+seamPreview.maxGap.toFixed(4)+' mm。'+(options.widthMode==='edges'?'连接段采用两侧较小宽度。':''):'基准端点无需连接。');
     if(seamPreview.cleanupTolerance)$('seam-status').textContent+='\n转角输出按 0.001414 mm 容差清理。'+(seamPreview.discardedFragments?'移除 '+seamPreview.discardedFragments+' 条退化输出。':'');
     $('apply-seam').disabled=false;$('fit-seam').disabled=false;render();
@@ -1123,6 +1127,7 @@ function loadProject(value, sourceSession=null, endpointSession=null, lineSessio
   pieceSplitPanel.reset();if(tool==='split')setTool('select');
   pieceMergePanel.reset();if(tool==='merge')setTool('select');
   $('measurement').hidden=true;$('filter').value='';refresh();fit();
+  prjEditablePanel?.reset();
   }finally{recoverySuspended=suspended;}
   captureRecovery();
 }
@@ -1235,6 +1240,8 @@ assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),ge
   prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>refresh(),
   hostActions:{'view.fit':()=>{refresh();fit();},'file.savePrj':()=>{refresh();fit();prjNewPanel.open();},'file.exportDxf':()=>{$('export').click();},'file.saveProject':()=>{save();}}});
 constructPanel=createConstructPanel({commands:cadCommands,host:$('workspace'),getProject:()=>project,getSelection:()=>selected,getTool:()=>tool,setTool,render,notify});
+// An opened ET file is a read-only view; this offers to turn it into an editable millimetre project.
+prjEditablePanel=createPrjEditablePanel({host:$('workspace'),getProject:()=>project,getSource:()=>pantsSource,canReplace,load:value=>loadProject(validateProject(value)),notify});
 $('construct-tool').onclick=()=>{if(!importPending&&!gesture&&!draft.length)constructPanel.begin();else notify('请先完成或取消当前编辑。');};
 const assistantEntry=document.createElement('button');assistantEntry.id='assistant-open';assistantEntry.textContent='AI 助手';assistantEntry.setAttribute('aria-pressed','false');assistantEntry.onclick=()=>{assistantPanel.toggle();assistantEntry.setAttribute('aria-pressed',String(assistantPanel.isOpen()));};document.querySelector('.file-actions').append(assistantEntry);
 $('assistant-close').addEventListener('click',()=>assistantEntry.setAttribute('aria-pressed','false'));

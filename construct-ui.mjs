@@ -83,6 +83,35 @@ export const CONSTRUCT_TOOLS = [
     command: s => ({ type: 'curve.insertPoint', parameters: { entityId: s.base.id, near: s.near } }) },
   { id: 'curveRemove', title: '删曲线点', hint: '在曲线上靠近要删的曲线点点一下。端点不能删。', slots: [line('base', '曲线和要删的点', { near: 'near', points: true })], fields: [],
     command: (s, selection, project) => { const hit = curvePointNear(find(project, s.base.id), s.near); return { type: 'curve.removePoint', parameters: { entityId: s.base.id, index: hit ? hit.index : 1 } }; } },
+  { id: 'notch', title: '刀口', hint: '按距离：在线上点一下，点在靠近量起的那一端，距离从这一端沿线量。指定位置：点在哪里，刀口就打在哪里。这条边有缝份时，刀口从缝边线向里切。',
+    slots: [line('base', '要打刀口的线', { near: 'near' })], fields: [choice('place', '位置', [['distance', '按距离'], ['click', '指定位置（点在哪里打在哪里）']]), size('distance', '按距离：离点的这一端', 50), whole('count', '个数', 1, 1, 3), size('depth', '刀口深度', 3)],
+    command: (s, selection, project) => {
+      const entity = find(project, s.base.id), far = (a, b) => Math.hypot(a.x - b.x, a.y - b.y); let segmentIndex, a = entity?.points[0], b = entity?.points.at(-1);
+      // on an outline drawn as one closed polyline the nearest side is the edge that is meant
+      if (entity && entity.closed && !entity.curve && s.near) { let best = Infinity; entity.points.forEach((p, i) => { const q = entity.points[(i + 1) % entity.points.length], dx = q.x - p.x, dy = q.y - p.y, d2 = dx * dx + dy * dy, t = d2 ? Math.max(0, Math.min(1, ((s.near.x - p.x) * dx + (s.near.y - p.y) * dy) / d2)) : 0, d = Math.hypot(s.near.x - p.x - t * dx, s.near.y - p.y - t * dy); if (d < best) { best = d; segmentIndex = i; a = p; b = q; } }); }
+      const from = s.near && a && b && far(s.near, b) < far(s.near, a) ? 'end' : 'start';
+      if (s.place === 'click' && entity && s.near) {
+        // the place that was clicked, as a distance along the line (or along the side of a closed outline) from its start
+        const pts = segmentIndex === undefined ? entity.points : [a, b]; let best = Infinity, along = 0, walked = 0;
+        for (let i = 1; i < pts.length; i++) { const p = pts[i - 1], q = pts[i], dx = q.x - p.x, dy = q.y - p.y, size = Math.hypot(dx, dy); if (!(size > 0)) continue; const t = Math.max(0, Math.min(1, ((s.near.x - p.x) * dx + (s.near.y - p.y) * dy) / (size * size))), d = Math.hypot(s.near.x - p.x - t * dx, s.near.y - p.y - t * dy); if (d < best) { best = d; along = walked + t * size; } walked += size; }
+        return { type: 'notch.add', parameters: { entityId: s.base.id, ...(segmentIndex === undefined ? {} : { segmentIndex }), from: 'start', distance: Math.round(along * 1000) / 1000, ...(s.count > 1 ? { count: s.count } : {}), depth: s.depth } };
+      }
+      return { type: 'notch.add', parameters: { entityId: s.base.id, ...(segmentIndex === undefined ? {} : { segmentIndex }), from, distance: s.distance, ...(s.count > 1 ? { count: s.count } : {}), depth: s.depth } };
+    } },
+  { id: 'auxiliary', title: '辅助线', hint: '点一条线，把它设成辅助线（蓝色虚线）或恢复成普通线。裁片的轮廓线不能设成辅助线。', slots: [line('base', '要设置的线')], fields: [choice('auxiliary', '设为', [['yes', '辅助线'], ['no', '普通线']])],
+    command: s => ({ type: 'line.setAuxiliary', parameters: { entityIds: [s.base.id], auxiliary: s.auxiliary === 'yes' } }) },
+  { id: 'auxDelete', title: '删辅助线', hint: '一次删掉图上全部辅助线，其他线不动。点“画到画布”执行，可以撤销。', slots: [], fields: [],
+    command: () => ({ type: 'line.deleteAuxiliary', parameters: {} }) },
+  { id: 'seamCorner', title: '缝边角', hint: '在裁片的轮廓线上，靠近要处理的转角点一下。切角：点这个转角的任意一条边。台阶角：点侧缝那条边。反转角：点折边那条边。裁片要先有缝份。',
+    slots: [line('base', '轮廓线，点在转角附近', { near: 'near' })],
+    fields: [choice('kind', '处理', [['cut', '切角'], ['step', '台阶角'], ['fold', '反转角'], ['plain', '普通转角']]), size('first', '切角：这条边截掉', 10), size('second', '切角：另一条边截掉', 10), size('drop', '台阶角：台阶高度', 8), size('run', '台阶角：离侧缝缝边线', 19)],
+    command: (s, selection, project) => {
+      const entity = find(project, s.base.id), group = (project.groups || []).find(g => g.entityIds.includes(s.base.id));
+      // on a closed outline drawn as one polyline the nearest side is the edge that is meant
+      let segmentIndex; if (entity && entity.closed && !entity.curve && s.near) { let best = Infinity; entity.points.forEach((a, i) => { const b = entity.points[(i + 1) % entity.points.length], dx = b.x - a.x, dy = b.y - a.y, q = dx * dx + dy * dy, t = q ? Math.max(0, Math.min(1, ((s.near.x - a.x) * dx + (s.near.y - a.y) * dy) / q)) : 0, d = Math.hypot(s.near.x - a.x - t * dx, s.near.y - a.y - t * dy); if (d < best) { best = d; segmentIndex = i; } }); }
+      return { type: 'seam.corner', parameters: { groupId: group ? group.id : '不在裁片上', entityId: s.base.id, ...(segmentIndex === undefined ? {} : { segmentIndex }), near: s.near, kind: s.kind,
+        ...(s.kind === 'cut' ? { first: s.first, second: s.second } : s.kind === 'step' ? { drop: s.drop, run: s.run } : {}) } };
+    } },
 ];
 
 /** What the preview says about a result, in the panel's unit. */
@@ -100,6 +129,10 @@ function describe(summary, show) {
   if (summary.operation === 'selection.mirrorAxis') parts.push(summary.entities + ' 个图元' + (summary.copy ? '的镜像副本' : '翻到另一侧'));
   if (summary.operation === 'selection.alignAxis') parts.push(summary.entities + ' 个图元转动 ' + Math.abs(summary.degrees) + '°，参考线变成' + (summary.axis === 'vertical' ? '垂直' : '水平'));
   if (summary.operation === 'draw.rungs') parts.push((summary.count - 1) + ' 条间隔线');
+  if (summary.operation === 'notch.add') parts.push(summary.count + ' 个刀口，离线的起点 ' + show(summary.fromStartMm) + '，线长 ' + show(summary.lineLengthMm) + (summary.onSeamLine ? '，从缝边线向里切' : '，画在这条线上'));
+  if (summary.operation === 'line.setAuxiliary') parts.push(summary.lines + ' 条线' + (summary.auxiliary ? '设成辅助线' : '恢复成普通线'));
+  if (summary.operation === 'line.deleteAuxiliary') parts.push('删掉 ' + summary.lines + ' 条辅助线');
+  if (summary.operation === 'seam.corner') parts.push(({ cut: '切角', step: '台阶角', fold: '反转角', plain: '恢复普通转角' })[summary.kind] + '，' + summary.cornersChanged + ' 个转角；这个裁片现在有 ' + summary.treatedCorners + ' 个转角做了角处理');
   if (summary.onExtension) parts.push('垂足在目标线的延长线上');
   if (summary.possibleLines > 1) parts.push('共有 ' + summary.possibleLines + ' 条切线，已取切点离点击处近的一条');
   if (summary.ends) parts.push('移动 ' + summary.ends.length + ' 个线端' + (summary.ends.length === 1 ? '，线长 ' + show(summary.ends[0].lengthMm) : ''));
@@ -259,6 +292,8 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
     }
     if (!plan) return;
     for (const change of plan.changes) { const entity = change.after; if (entity.type === 'text') continue; node('path', { d: pathData(entity.points, entity.closed), fill: 'none', stroke: '#dc8129', 'stroke-width': 2.5, 'data-construct-preview': 'true' }, overlay); }
+    // what the command would delete is shown crossed out in red
+    for (const gone of plan.removed || []) { const entity = gone.before; if (!entity || entity.type === 'text') continue; node('path', { d: pathData(entity.points, entity.closed), fill: 'none', stroke: '#c2413a', 'stroke-width': 2.5, 'stroke-dasharray': '6 4', 'data-construct-removal': 'true' }, overlay); }
   }
   $('construct-apply').onclick = apply;
   $('construct-clear').onclick = () => { state().picks = {}; state().active = 0; update(); };

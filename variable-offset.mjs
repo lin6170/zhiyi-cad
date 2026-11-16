@@ -60,6 +60,34 @@ function joinPoints(vertex,intersection,previous,next,normalPrevious,normalNext,
   const cut=Math.tan(Math.abs(angle)/4);
   return [add(add(vertex,normalPrevious,widthPrevious),previous,widthPrevious*cut),add(add(vertex,normalNext,widthNext),next,-widthNext*cut)];
 }
+/**
+ * The outward allowance as the union of one band along every edge and one wedge at every convex corner.
+ * Concave corners need nothing: their bands overlap. Used when the envelope test refuses a contour because a
+ * concave corner sits next to a finely sampled curve. Returns null unless every convex corner is a plain miter,
+ * that is, unless both seam lines reach the point where they meet.
+ */
+function bandUnion(path,widths,tangent,normal,config){
+  const count=path.length,round=p=>({X:Math.round(p.X),Y:Math.round(p.Y)}),parts=[path.map(round)];
+  for(let i=0;i<count;i++){
+    if(!(widths[i]>0))continue;
+    const p=path[i],q=path[(i+1)%count];
+    parts.push([p,add(p,normal[i],widths[i]),add(q,normal[i],widths[i]),q].map(round));
+  }
+  for(let j=0;j<count;j++){
+    const k=(j+count-1)%count,turn=cross(tangent[k],tangent[j]);
+    if(turn<=1e-12)continue;
+    const v=path[j],a=add(v,normal[k],widths[k]),b=add(v,normal[j],widths[j]),s=cross(sub(b,a),tangent[j])/turn,tip=add(a,tangent[k],s);
+    const back=(tip.X-b.X)*tangent[j].X+(tip.Y-b.Y)*tangent[j].Y;
+    if(s<-1e-6||back>1e-6||Math.max(Math.abs(tip.X),Math.abs(tip.Y))>1e14)return null;
+    const join=joinPoints(v,tip,tangent[k],tangent[j],normal[k],normal[j],widths[k],widths[j],turn,config);
+    parts.push([v,a,...join,b].map(round));
+  }
+  const clipper=new Clipper.Clipper(),solution=[];
+  clipper.AddPaths(parts.filter(part=>Math.abs(Clipper.Clipper.Area(part))>0),Clipper.PolyType.ptSubject,true);
+  clipper.Execute(Clipper.ClipType.ctUnion,solution,Clipper.PolyFillType.pftNonZero,Clipper.PolyFillType.pftNonZero);
+  const outer=solution.filter(part=>Clipper.Clipper.Area(part)>0);   // a pocket enclosed by overlapping bands is allowance too
+  return outer.length?outer:null;
+}
 function clipHalfPlane(points,origin,tangent,width){
   const value=p=>cross(tangent,sub(p,origin))-width,result=[];
   for(let i=0;i<points.length;i++){
@@ -85,7 +113,15 @@ export function variableOffset(path,widths,direction,config){
     const rounded=clipped.map(p=>({X:Math.round(p.X),Y:Math.round(p.Y)}));
     return rounded.length>=3&&Clipper.Clipper.Area(rounded)>0?[rounded]:[];
   }
-  const envelope=supportEnvelope(path,widths,tangent,normal);
+  let envelope;
+  try{envelope=supportEnvelope(path,widths,tangent,normal);}
+  catch(error){
+    // The envelope test looks at every chord of a sampled curve, so a concave corner next to a curve fails it
+    // although the allowance itself is sound. Bands joined at the convex corners give the outline in that case.
+    const parts=config.join==='miter'?bandUnion(path,widths,tangent,normal,config):null;
+    if(parts)return parts;
+    throw error;
+  }
   const raw=[];
   function push(p){
     if(raw.length>=200000)throw new Error('变宽转角采样超过上限，请增加圆角容差');

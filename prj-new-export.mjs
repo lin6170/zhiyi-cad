@@ -13,10 +13,19 @@ import { orientChain, contoursForGroup } from './topology.mjs';
 import { textWidth } from './geometry.mjs';
 import { edgeWidthMap, edgeKey } from './seam-widths.mjs';
 import { parsePrj } from './prj-parser.mjs';
+import { cutCorner, stepCorner, foldCorner } from './seam-corners.mjs';
+import { generateNotches } from './notches.mjs';
 
 export const NEW_PRJ_FORMAT = 'ET PRJ 2.0 / 08';
 export const NEW_PRJ_NATIVE_VERIFIED = true;
 const DOCUMENT_CLASS = 0x0b8f70ad, WHITE = [255, 255, 255], SEAM = [255, 128, 0], INTERNAL = [128, 128, 128];
+/** The display colour a line carries from an ET file, if any. ET treats white loose lines as outlines, coloured ones as auxiliary lines. */
+/** ET's attribute word of a line carried from an ET file (auxiliary line and the like); 0 for an ordinary line. Without it ET takes a closed loop of loose lines for a piece outline when it regenerates seam allowances. */
+const attributeOf = entity => Number.isInteger(entity.etAttribute) && entity.etAttribute > 0 && entity.etAttribute <= 0xffffffff ? entity.etAttribute : 0;
+/** ET's marks of a line that is no contour edge: auxiliary line (0x10) and division mark (0x08). */
+const marked = (flags, entity) => { const kept = Array.isArray(entity.etFlags) ? entity.etFlags : [0, 0]; return [flags[0] | (kept[0] & 0x18) | (entity.aux ? 0x10 : 0), flags[1], flags[2]]; };
+const AUXILIARY = [0, 127, 255];
+const colorOf = entity => Array.isArray(entity.color) && entity.color.length === 3 && entity.color.every(v => Number.isInteger(v) && v >= 0 && v <= 255) ? entity.color : null;
 const MM_PER_UNIT = 10, LIMIT = 100000, CURVE_TOLERANCE = .001, GAP_TOLERANCE = .005, SMOOTH_SINE = Math.sin(20 * Math.PI / 180);
 const clone = value => JSON.parse(JSON.stringify(value));
 function canonical(value) {
@@ -57,7 +66,8 @@ class Writer {
   u8(value) { return this.bytes([value & 255]); }
   u16(value) { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, value, true); return this.bytes(b); }
   u32(value) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, value >>> 0, true); return this.bytes(b); }
-  f32(value) { const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, value, true); return this.bytes(b); }
+  // Negative zero is written as zero: the same drawing then gives the same bytes whether it comes from memory or from a saved project.
+  f32(value) { const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, value + 0, true); return this.bytes(b); }
   string(text) { const b = encodeGbk(text); return this.u16(b.length).bytes(b); }
   point(p) { return this.f32(p.x).f32(p.y).f32(0); }
   list(values) { this.u32(values.length); for (const value of values) this.u32(value); return this; }
@@ -84,8 +94,13 @@ export function encodeNewPrj(model) {
   w.zero(282).u32(1).zero(9).u32(9).u32(9).u32(DOCUMENT_CLASS).zero(36);
   // One size.
   w.u32(1).u32(1).u32(model.root.id).u32(0).bytes(WHITE).f32(1).u32(0).u8(1).string(size).u32(9);
-  w.u32(model.nodes.length);
+  w.u32(model.nodes.length + model.notches.length);
   for (const node of model.nodes) w.u32(6).u32(node.id).bytes([0, 0, 255, 0, 0, 0]).point(node).u32(node.owner).u32(0);
+  // A notch is a node of type 7: after the common part, how it is placed (0 by distance, 1 where the referenced line meets the edge),
+  // the distance from one end of its curve, 1, the curve, which end, its role (0 on the net edge, 2 for the twin on the seam line),
+  // the direction it points and the tangent of the curve there.
+  for (const notch of model.notches) w.u32(7).u32(notch.id).bytes([0, 0, 255, 0, 0, 0]).point(notch).u32(notch.reference).u32(0)
+    .u8(notch.mode).f32(notch.distance).u32(1).u32(notch.owner).u8(notch.end).u32(notch.role).point(notch.direction).point(notch.tangent).u32(0);
   w.u32(model.curves.length);
   model.curves.forEach((curve, index) => {
     w.u32(curve.id).bytes(curve.base).bytes(curve.flags);
@@ -96,7 +111,7 @@ export function encodeNewPrj(model) {
       w.u32(curve.controls.length); for (const p of curve.controls) w.point(p);
       w.u32(0); // ET rebuilds its display table when the file is opened.
     }
-    w.list([index * 2 + 1, index * 2 + 2]).list([]).list(curve.links).f32(curve.width).u32(0).u32(0).u16(0);
+    w.list([index * 2 + 1, index * 2 + 2]).list(curve.secondary || []).list(curve.links).f32(curve.width).u32(0).u32(curve.attribute || 0).u16(0);
   });
   w.u32(model.pieces.length);
   model.pieces.forEach((piece, index) => {
@@ -114,7 +129,12 @@ export function encodeNewPrj(model) {
     w.f32(text.x).f32(text.y).f32(text.cos).f32(text.sin).f32(text.width).f32(text.height).u32(0).string(text.text).f32(text.x2).f32(text.y2).zero(6);
   }
   w.u32(0).u32(0).u32(model.corners.length);
-  for (const corner of model.corners) w.u32(0).bytes(WHITE).u8(0).u32(corner.curve).u32(corner.end).u32(0).u32(0xffffffff);
+  // One record per contour corner. A cut (6) or stepped (8) corner replaces the plain record and carries two sizes;
+  // a fold-back (1) is an extra record of the folded edge that names its treated ends (0 and 1, or -1 for an end left plain).
+  for (const corner of model.corners) {
+    w.u32(0).bytes(WHITE).u8(corner.type || 0).u32(corner.curve).u32(corner.end >>> 0).u32(corner.other || 0).u32((corner.otherEnd ?? -1) >>> 0);
+    if (corner.type === 6 || corner.type === 8) w.f32(corner.sizes[0]).f32(corner.sizes[1]);
+  }
   w.zero(160);
   const bytes = w.done();
   if (bytes.length > 16 * 1024 * 1024) throw new Error('生成的 PRJ 超过 16 MB。');
@@ -156,12 +176,18 @@ export function readNewPrj(input) {
   expect(1, u32(), '尺码'); expect(1, u32(), '尺码');
   const root = { id: u32() }; expect(0, u32(), '尺码'); white('尺码'); expect(1, f32(), '尺码'); expect(0, u32(), '尺码'); expect(1, u8(), '尺码'); literal(header.sizeName, '尺码名'); expect(9, u32(), '尺码');
   const nodeCount = u32(); if (nodeCount > 200000) fail('节点数量异常');
-  const nodes = [];
+  const nodes = [], notches = [];
   for (let i = 0; i < nodeCount; i++) {
-    expect(6, u32(), '节点类型'); const id = u32(); expect(0, u8(), '节点'); expect(0, u8(), '节点'); expect(255, u8(), '节点'); zeros(3, '节点标志');
-    const p = point(), owner = u32(); expect(0, u32(), '节点'); nodes.push({ id, x: p.x, y: p.y, owner });
+    const type = u32(); if (type !== 6 && type !== 7) fail('节点类型不受支持');
+    const id = u32(); expect(0, u8(), '节点'); expect(0, u8(), '节点'); expect(255, u8(), '节点'); zeros(3, '节点标志');
+    const p = point(), owner = u32(); expect(0, u32(), '节点');
+    if (type === 6) { if (notches.length) fail('端点节点排在刀口之后'); nodes.push({ id, x: p.x, y: p.y, owner }); continue; }
+    const notch = { id, x: p.x, y: p.y, reference: owner, mode: u8(), distance: f32() }; expect(1, u32(), '刀口'); notch.owner = u32(); notch.end = u8(); notch.role = u32();
+    notch.direction = point(); notch.tangent = point(); expect(0, u32(), '刀口');
+    if (notch.mode > 1 || notch.end > 1 || ![0, 2].includes(notch.role)) fail('刀口记录不符');
+    notches.push(notch);
   }
-  const curveCount = u32(); if (curveCount * 2 !== nodeCount) fail('节点与线条数量不一致');
+  const curveCount = u32(); if (curveCount * 2 !== nodes.length) fail('节点与线条数量不一致');
   const curves = [];
   for (let i = 0; i < curveCount; i++) {
     const curve = { id: u32(), base: rgb(), flags: [u8(), u8(), u8()], kind: u32() }; expect(0, u32(), '线条');
@@ -173,8 +199,8 @@ export function readNewPrj(input) {
       expect(n + 2, u32(), '曲线控制点数'); curve.controls = Array.from({ length: n + 2 }, point); expect(0, u32(), '曲线显示表');
     } else fail('线条类型不受支持');
     const direct = list(); if (direct.length !== 2 || direct[0] !== i * 2 + 1 || direct[1] !== i * 2 + 2) fail('线条节点引用不符');
-    if (list().length) fail('线条附加节点不受支持');
-    curve.links = list(); curve.width = f32(); expect(0, u32(), '线条'); expect(0, u32(), '线条'); expect(0, u16(), '线条');
+    const secondary = list(); if (secondary.some(n => !(n > curveCount * 2 && n <= nodeCount) || notches[n - curveCount * 2 - 1].owner !== i + 1)) fail('线条附加节点引用不符'); if (secondary.length) curve.secondary = secondary;
+    curve.links = list(); curve.width = f32(); expect(0, u32(), '线条'); curve.attribute = u32(); expect(0, u16(), '线条');
     curves.push(curve);
   }
   const pieceCount = u32(); if (pieceCount > 10000) fail('裁片数量异常');
@@ -202,9 +228,15 @@ export function readNewPrj(input) {
   expect(0, u32(), '附加对象'); expect(0, u32(), '附加对象');
   const cornerCount = u32(); if (cornerCount > 100000) fail('转角数量异常');
   const corners = [];
-  for (let i = 0; i < cornerCount; i++) { expect(0, u32(), '转角'); white('转角'); expect(0, u8(), '转角类型'); const corner = { curve: u32(), end: u32() }; expect(0, u32(), '转角'); expect(0xffffffff, u32(), '转角'); corners.push(corner); }
+  for (let i = 0; i < cornerCount; i++) {
+    expect(0, u32(), '转角'); white('转角'); const type = u8(); if (![0, 1, 6, 8].includes(type)) fail('转角类型 ' + type + ' 不受支持');
+    const corner = { curve: u32(), end: u32() | 0, other: u32(), otherEnd: u32() | 0 };
+    if (type) corner.type = type; else { if (corner.other !== 0 || corner.otherEnd !== -1) fail('转角记录不符'); delete corner.other; delete corner.otherEnd; }
+    if (type === 6 || type === 8) corner.sizes = [f32(), f32()];
+    corners.push(corner);
+  }
   if (bytes.length - o !== 160) fail('文件尾长度不符'); zeros(160, '文件尾');
-  return { header, root, nodes, curves, pieces, texts, corners };
+  return { header, root, nodes, notches, curves, pieces, texts, corners };
 }
 
 // ---------------------------------------------------------------- geometry
@@ -347,6 +379,24 @@ function edgeTangents(edge) {
   return [unit(sub(shown[1], shown[0]), '曲线起点'), unit(sub(shown.at(-1), shown.at(-2)), '曲线终点')];
 }
 function edgePolyline(edge) { return edge.kind === 'line' ? edge.points : sampleEtSpline(edge.data, 8); }
+/** How far along a polyline the point nearest to q lies, and the length of the polyline. */
+function alongPolyline(points, q) {
+  let best = { off: Infinity, s: 0 }, walked = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], d = sub(points[i], a), size = length(d); if (!(size > 0)) continue;
+    const t = Math.max(0, Math.min(1, dot(sub(q, a), d) / (size * size))), off = length(sub(sub(q, a), { x: d.x * t, y: d.y * t }));
+    if (off < best.off) best = { off, s: walked + t * size };
+    walked += size;
+  }
+  return { ...best, total: walked };
+}
+/** The seam line of a curved edge as points that start at one of its corners and run along the edge; null for a straight edge. */
+function seamPathFrom(edge, fromTraversalStart) {
+  if (edge.kind === 'line') return null;
+  const points = edgePolyline(edge), ordered = edge.reversed ? [...points].reverse() : points, last = ordered.length - 1;
+  const path = ordered.map((p, i) => add(p, right(unit(sub(ordered[Math.min(i + 1, last)], ordered[Math.max(i - 1, 0)]), '曲线')), edge.width));
+  return fromTraversalStart ? path : path.reverse();
+}
 
 /**
  * Translate a project into the explicit PRJ model. Throws one Error listing
@@ -360,14 +410,15 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
   if (!project || project.format !== 'zhiyi-cad' || !Array.isArray(project.entities)) throw new Error('当前工程无法识别。');
   if (project.units !== 'mm') problems.push('工程单位不是毫米。从 ET 导入且未确认比例的工程请使用原有的 PRJ 回存。');
   if (project.entities.some(e => e.source?.format === 'ET PRJ')) problems.push('工程含从 ET PRJ 导入的图元，请使用原有的 PRJ 回存，或保存工程。');
-  if (project.notches?.length || project.entities.some(e => e.notchFrom)) problems.push('工程含刀口，新建 PRJ 尚不支持写入刀口。');
+
   if (!Number.isSafeInteger(identityStart) || identityStart < 1 || identityStart > 0xfff00000) problems.push('对象编号起点无效。');
   if (problems.length) throw new Error(problems.join('\n'));
 
   const byId = new Map(project.entities.map(e => [e.id, e])), used = new Set(), recipes = project.seamAllowances || [];
-  const derived = new Set(project.entities.filter(e => e.derivedFrom).map(e => e.id));
+  const derived = new Set(project.entities.filter(e => e.derivedFrom || e.notchFrom).map(e => e.id));
   let nextId = identityStart; const id = () => nextId++;
-  const model = { header: { ...formatDate(now), id: id(), collection: '', style: String(project.name || '未命名纸样').slice(0, 60), note: '', sizeName: 'F' }, root: { id: id() }, nodes: [], curves: [], pieces: [], texts: [], corners: [] };
+  const model = { header: { ...formatDate(now), id: id(), collection: '', style: String(project.name || '未命名纸样').slice(0, 60), note: '', sizeName: 'F' }, root: { id: id() }, nodes: [], notches: [], curves: [], pieces: [], texts: [], corners: [] };
+  const pendingNotches = [], curveOf = new Map(), writtenNotches = new Set();   // curveOf: the first curve written for an editor entity
   const report = { format: NEW_PRJ_FORMAT, fileUnit: 'cm', scale: '1 cm = 10 mm', pieces: [], looseCurves: 0, looseTexts: 0, maxCurveDeviationMm: 0, seamRecipes: 0, omitted: [], notes };
   try { encodeGbk(model.header.style); } catch (error) { problems.push('工程名称：' + error.message); }
 
@@ -441,6 +492,27 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
         if (length(sub(X, P)) > 200) throw new Error('“' + edge.name + '”处的缝份转角过尖，延长超过 2 m。');
         return X;
       });
+      // Corner treatments of the seam recipe (cut, step, fold-back) replace the plain corner at single contour corners.
+      const joints = corner.map(tip => ({ tip, end: tip, start: tip, pieces: [] })), cornerRecords = [], folds = new Map();
+      for (const item of recipe?.corners || []) {
+        const k = traversal.findIndex(edge => edge.entity.id === item.entityId && (edge.segmentIndex ?? null) === (item.segmentIndex ?? null));
+        if (k < 0 || !['start', 'end'].includes(item.end)) throw new Error('缝份的角处理引用了不在轮廓上的边。');
+        // the corner is where edge k ends (it arrives there) or where it starts (it leaves from there)
+        const arrives = (item.end === 'end') !== traversal[k].reversed, v = arrives ? k : (k + count - 1) % count, role = arrives ? 'arriving' : 'leaving';
+        const first = traversal[v], second = traversal[(v + 1) % count], P = ends[v][1], where = '“' + first.name + '”与“' + second.name + '”之间的转角：';
+        const arriving = { tangent: tangents[v][1], width: first.width }, leaving = { tangent: tangents[(v + 1) % count][0], width: second.width };
+        if (joints[v].pieces.length) throw new Error(where + '有两种角处理。');
+        try {
+          if (item.kind === 'cut') joints[v] = cutCorner(P, arriving, leaving, { arrivingCut: (arrives ? item.first : item.second) / MM_PER_UNIT, leavingCut: (arrives ? item.second : item.first) / MM_PER_UNIT, owner: role });
+          else if (item.kind === 'step') joints[v] = stepCorner(P, arriving, leaving, { side: role, drop: item.drop / MM_PER_UNIT, run: item.run / MM_PER_UNIT });
+          else if (item.kind === 'fold') joints[v] = foldCorner(P, arriving, leaving, { fold: role, sidePath: arrives ? seamPathFrom(second, true) : seamPathFrom(first, false) });
+          else throw new Error('不认识的角处理“' + item.kind + '”。');
+        } catch (error) { throw new Error(where + error.message); }
+        if (item.kind === 'fold') { const entry = folds.get(k) || { edge: k, start: false, end: false }; entry[item.end] = true; folds.set(k, entry); continue; }
+        const otherIndex = arrives ? (k + 1) % count : v, other = traversal[otherIndex], otherEnd = (!arrives) !== other.reversed ? 1 : 0;
+        cornerRecords[v] = { edge: k, type: item.kind === 'cut' ? 6 : 8, end: item.end === 'end' ? 1 : 0, ...(item.kind === 'cut' ? { other: otherIndex, otherEnd } : { otherEnd: -1 }),
+          sizes: (item.kind === 'cut' ? [item.first, item.second] : [item.drop, item.run]).map(value => Math.fround(value / MM_PER_UNIT)) };
+      }
       for (const item of bases) used.add(item.id);
       // Other members.
       const members = group.entityIds.map(entityId => byId.get(entityId)).filter(e => e && !primary.entityIds.includes(e.id));
@@ -453,7 +525,7 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
         if (member.type === 'text') texts.push(member); else internals.push(member);
         used.add(member.id);
       }
-      pieceSpecs.push({ group, traversal, corner, tangents, ends, internals, texts, grain: grains[0] || null, outline, recipe });
+      pieceSpecs.push({ group, traversal, corner, joints, cornerRecords, folds, tangents, ends, internals, texts, grain: grains[0] || null, outline, recipe });
     } catch (error) { problems.push('裁片“' + group.name + '”：' + error.message); }
   }
   for (const recipe of recipes) if (!pieceSpecs.some(spec => spec.recipe === recipe)) problems.push('缝份“' + recipe.name + '”的基准不是裁片主轮廓，不能写入新 PRJ。');
@@ -461,12 +533,12 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
 
   try {
     for (const spec of pieceSpecs) {
-      const { traversal, corner, tangents, ends } = spec, count = traversal.length, chain = [], seams = [], internal = [], texts = [];
+      const { traversal, joints, tangents, ends } = spec, count = traversal.length, chain = [], seams = [], internal = [], texts = [], seamShapes = [];
       const hasSeam = Boolean(spec.recipe);
       for (const edge of traversal) chain.push(addCurve(edge, { base: WHITE, color: WHITE, flags: [1 | (edge.reversed ? 2 : 0), 0, 0], style: 0, width: Math.fround(edge.width) }));
-      for (const member of spec.internals) for (const edge of entityEdges(member)) internal.push(addCurve(edge, { base: INTERNAL, color: INTERNAL, flags: [0, 0, 1], style: 0, width: 1 }));
+      for (const member of spec.internals) for (const edge of entityEdges(member)) { internal.push(addCurve(edge, { base: member.aux ? AUXILIARY : INTERNAL, color: colorOf(member) || (member.aux ? AUXILIARY : INTERNAL), flags: marked([0, 0, 1], member), style: member.lineStyle === 1 || member.aux ? 1 : 0, width: 1, attribute: attributeOf(member) })); if (!curveOf.has(member.id)) curveOf.set(member.id, internal.at(-1)); }
       traversal.forEach((edge, i) => {
-        const startCorner = corner[(i + count - 1) % count], endCorner = corner[i], t0 = tangents[i][0], t1 = tangents[i][1];
+        const startCorner = joints[(i + count - 1) % count].start, endCorner = joints[i].end, t0 = tangents[i][0], t1 = tangents[i][1];
         let points;
         if (edge.kind === 'line') points = [startCorner, endCorner];
         else {
@@ -482,10 +554,50 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
         else try { seamEdge = { kind: 'spline', data: fitEt(natural) }; } catch { throw new Error('裁片“' + spec.group.name + '”在“' + edge.name + '”处的缝份曲线无法稳定生成，请减小该边缝份。'); }
         if (seamEdge.kind === 'line' && seamEdge.points[0].x === seamEdge.points[1].x && seamEdge.points[0].y === seamEdge.points[1].y) throw new Error('裁片“' + spec.group.name + '”的缝份线在“' + edge.name + '”处退化为一点。');
         const index = addCurve(seamEdge, { base: SEAM, color: SEAM, flags: [edge.reversed ? 2 : 0, 0, 2], style: 0, width: 1 });
-        seams.push(index); pendingCurves[chain[i] - 1].links = [index];
+        seams.push(index); pendingCurves[chain[i] - 1].links = [index]; seamShapes[i] = { index, points: seamEdge.kind === 'line' ? seamEdge.points : sampleEtSpline(seamEdge.data, 16) };
       });
+      // Extra seam lines of the treated corners, written in the direction the outline is walked. Each belongs to one of the two
+      // net edges of its corner; ET marks the ones at the stored end of their edge with 4 in the first flag byte.
+      if (hasSeam) joints.forEach((joint, v) => joint.pieces.forEach(piece => {
+        const j = piece.owner === 'arriving' ? v : (v + 1) % count, owner = traversal[j], atStoredEnd = (piece.owner === 'arriving') !== owner.reversed;
+        const points = piece.points.map(round), a = points[0], b = points.at(-1);
+        if (length(sub(a, b)) < 1e-4) return;   // the treatment leaves nothing to draw here
+        // a straight piece on a straight edge is a line; everything else is a curve through its points, as ET writes it
+        const through = points.length > 2 ? points : [a, round(add(a, sub(b, a), .5)), b];
+        const extra = owner.kind === 'line' && points.length === 2 ? { kind: 'line', points: [a, b] } : { kind: 'spline', data: fitEt(through) };
+        const index = addCurve(extra, { base: SEAM, color: SEAM, flags: [atStoredEnd ? 4 : 0, 0, 2], style: 0, width: 1 });
+        seams.push(index); pendingCurves[chain[j] - 1].links.push(index);
+      }));
       const cornerFirst = model.corners.length + 1;
-      traversal.forEach((edge, i) => model.corners.push({ curve: chain[i], end: edge.reversed ? 0 : 1 }));
+      traversal.forEach((edge, i) => { const special = spec.cornerRecords[i];
+        model.corners.push(special ? { type: special.type, curve: chain[special.edge], end: special.end, other: special.other === undefined ? 0 : chain[special.other], otherEnd: special.otherEnd, sizes: special.sizes }
+          : { curve: chain[i], end: edge.reversed ? 0 : 1 }); });
+      for (const fold of spec.folds.values()) model.corners.push({ type: 1, curve: chain[fold.edge], end: fold.start ? 0 : -1, other: 0, otherEnd: fold.end ? 1 : -1 });
+      traversal.forEach((edge, i) => { if (!curveOf.has(edge.entity.id)) curveOf.set(edge.entity.id, chain[i]); });
+      // Notches on the contour edges: a node on the net edge and, where the edge has a seam line, its twin on that line.
+      for (const recipe of project.notches || []) {
+        const owned = traversal.map((edge, i) => ({ edge, i })).filter(item => item.edge.entity.id === recipe.baseEntityId); if (!owned.length) continue;
+        let generated; try { generated = generateNotches(project, recipe.baseEntityId, { ...recipe, targetSeamId: null }); } catch (error) { throw new Error('刀口“' + recipe.name + '”：' + error.message); }
+        writtenNotches.add(recipe.id);
+        for (const station of generated.stations) {
+          const N = round(scalePoint(station.point)), t = unit(station.tangent, '刀口处的线');
+          const pointing = recipe.direction ? unit(recipe.direction, '刀口方向') : { x: -t.y * recipe.side, y: t.x * recipe.side };
+          // the edge the notch sits on: the only one, or the nearest side of a closed outline
+          const { edge, i } = owned.length === 1 ? owned[0] : owned.map(item => ({ ...item, off: segmentDistance(N, item.edge.points[0], item.edge.points[1]) })).sort((a, b) => a.off - b.off)[0];
+          const shape = edgePolyline(edge), walked = alongPolyline(shape, N), fromEnd = recipe.mode === 'end' || (recipe.et?.mode === 1 && walked.s > walked.total / 2);
+          const placed = recipe.et?.mode === 1 && recipe.et.referenceEntityId ? { mode: 1, referenceEntityId: recipe.et.referenceEntityId } : { mode: 0 };
+          const common = { ...placed, end: fromEnd ? 1 : 0, direction: { x: Math.fround(pointing.x), y: Math.fround(pointing.y) }, tangent: { x: Math.fround(t.x), y: Math.fround(t.y) } };
+          pendingNotches.push({ ...common, x: N.x, y: N.y, owner: chain[i], role: 0, measured: Math.fround(fromEnd ? walked.total - walked.s : walked.s) });
+          const seam = seamShapes[i]; if (!seam || !(edge.width > 0)) continue;
+          // the twin: where the notch, drawn on from the net edge, crosses the seam line of this edge
+          let S = null, best = Infinity;
+          for (let k = 1; k < seam.points.length; k++) { const a = seam.points[k - 1], d = sub(seam.points[k], a), den = cross(pointing, d); if (Math.abs(den) < 1e-12) continue;
+            const along = cross(sub(a, N), d) / den, u = cross(sub(a, N), pointing) / den; if (along > 1e-6 && u >= -1e-6 && u <= 1 + 1e-6 && along < best) { best = along; S = add(N, pointing, along); } }
+          if (!S) S = add(N, pointing, edge.width / Math.max(.2, Math.abs(cross(t, pointing))));
+          S = round(S); const onSeam = alongPolyline(seam.points, S);
+          pendingNotches.push({ ...common, x: S.x, y: S.y, owner: seam.index, role: 2, measured: Math.fround(fromEnd ? onSeam.total - onSeam.s : onSeam.s) });
+        }
+      }
       for (const member of spec.texts) { const index = addText(member); if (index) texts.push(index); }
       // Grain line: the arrow end of the editor line becomes ET's first end.
       let center, end1, end2, mode = 1;
@@ -498,25 +610,36 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
         notes.push('裁片“' + spec.group.name + '”没有布纹线，已按竖直方向在裁片中心添加。');
       }
       encodeGbk(spec.group.name);
-      model.pieces.push({ id: 0, id2: 0, name: spec.group.name, symmetric: spec.group.source?.kind === 'parametric-demo', mode, center: round(center), end1: round(end1), end2: round(end2),
-        chain, ownedCurves: [...chain, ...internal, ...seams], corners: Array.from({ length: count }, (_, i) => cornerFirst + i), texts });
+      model.pieces.push({ id: 0, id2: 0, name: spec.group.name, symmetric: spec.group.source?.kind === 'parametric-demo' || spec.group.attributes?.symmetric === true, mode, center: round(center), end1: round(end1), end2: round(end2),
+        chain, ownedCurves: [...chain, ...internal, ...seams], corners: Array.from({ length: model.corners.length - cornerFirst + 1 }, (_, i) => cornerFirst + i), texts });
       report.pieces.push({ name: spec.group.name, contourEdges: count, internalLines: internal.length, texts: texts.length, hasSeam,
-        seamWidthsMm: [...new Set(traversal.map(edge => +(edge.width * MM_PER_UNIT).toFixed(3)))].sort((a, b) => a - b), symmetric: spec.group.source?.kind === 'parametric-demo' });
+        seamWidthsMm: [...new Set(traversal.map(edge => +(edge.width * MM_PER_UNIT).toFixed(3)))].sort((a, b) => a - b), symmetric: spec.group.source?.kind === 'parametric-demo' || spec.group.attributes?.symmetric === true });
     }
     for (const entity of project.entities) {
       if (used.has(entity.id)) continue;
       if (derived.has(entity.id)) continue;
       if (entity.type === 'text') { if (addText(entity)) report.looseTexts++; continue; }
-      for (const edge of entityEdges(entity)) { addCurve(edge, { base: WHITE, color: WHITE, flags: [0, 0, 0], style: 0, width: 1 }); report.looseCurves++; }
+      for (const edge of entityEdges(entity)) { const index = addCurve(edge, { base: entity.aux ? AUXILIARY : WHITE, color: colorOf(entity) || (entity.aux ? AUXILIARY : WHITE), flags: marked([0, 0, 0], entity), style: entity.lineStyle === 1 || entity.aux ? 1 : 0, width: 1, attribute: attributeOf(entity) }); if (!curveOf.has(entity.id)) curveOf.set(entity.id, index); report.looseCurves++; }
     }
+    const left = (project.notches || []).filter(recipe => !writtenNotches.has(recipe.id));
+    if (left.length) notes.push('有 ' + left.length + ' 个刀口不在裁片的轮廓线上，ET 文件里只能记轮廓线上的刀口，这些没有写入。');
   } catch (error) { throw new Error(error.message); }
   if (!pendingCurves.length) throw new Error('工程没有可写入 PRJ 的线条。');
-  if (pendingCurves.length > 20000 || model.texts.length > 5000 || 2 + pendingCurves.length * 3 + model.pieces.length * 2 + model.texts.length > MAX_IDENTITIES) throw new Error('图元数量超过新建 PRJ 的上限。');
+  if (pendingCurves.length > 20000 || model.texts.length > 5000 || 2 + pendingCurves.length * 3 + pendingNotches.length + model.pieces.length * 2 + model.texts.length > MAX_IDENTITIES) throw new Error('图元数量超过新建 PRJ 的上限。');
   if (!model.texts.length || !model.pieces.length) notes.push('本工具重新打开自己的 PRJ 时需要至少一个裁片和一条文字；此文件只能在 ET 中打开。');
   // Identities in file order: nodes, curves, pieces, texts.
   pendingCurves.forEach((curve, index) => { for (const p of [curve.points[0], curve.points.at(-1)]) model.nodes.push({ id: id(), x: p.x, y: p.y, owner: index + 1 }); });
+  // notch nodes come after the end nodes; each curve lists its own
+  pendingNotches.forEach((notch, index) => {
+    // a notch placed by a line that is no longer written falls back to its distance from the end of its curve
+    const referred = notch.mode === 1 ? curveOf.get(notch.referenceEntityId) : null, mode = referred ? 1 : 0;
+    // placed by a line: ET records which end of that line touches the edge
+    const line = referred ? pendingCurves[referred - 1].points : null, touching = line && length(sub(line[0], notch)) > length(sub(line.at(-1), notch)) ? 1 : 0;
+    model.notches.push({ id: id(), x: notch.x, y: notch.y, reference: referred || notch.owner, mode, distance: mode ? 0 : notch.measured, owner: notch.owner, end: mode ? touching : notch.end, role: notch.role, direction: notch.direction, tangent: notch.tangent });
+    (pendingCurves[notch.owner - 1].secondary ??= []).push(pendingCurves.length * 2 + index + 1);
+  });
   model.curves = pendingCurves.map(curve => ({ id: id(), kind: curve.kind, base: curve.base, color: curve.color, flags: curve.flags, style: curve.style, points: curve.points,
-    ...(curve.kind === 4 ? { controls: curve.controls } : {}), links: curve.links, width: Math.fround(curve.width) }));
+    ...(curve.kind === 4 ? { controls: curve.controls } : {}), ...(curve.secondary ? { secondary: curve.secondary } : {}), links: curve.links, width: Math.fround(curve.width), attribute: curve.attribute || 0 }));
   for (const piece of model.pieces) { piece.id = id(); piece.id2 = id(); }
   for (const text of model.texts) text.id = id();
   const unsupported = [];

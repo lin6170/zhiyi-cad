@@ -25,6 +25,24 @@ export function normalizeEdgeWidths(options,baseIds=null){
   }
   return {widthMode,edgeWidths};
 }
+/** Corner treatments of a seam recipe: each names a contour edge, one of its ends and what happens at that corner. */
+export function normalizeCorners(corners,baseIds=null){
+  if(corners==null)return [];
+  if(!Array.isArray(corners)||corners.length>2000)throw new Error('角处理定义无效');
+  const seen=new Set(),result=[],size=(value,label)=>{if(!Number.isFinite(value)||value<=0||value>1000)throw new Error(label+'须大于 0，且不超过 1000 mm');return value;};
+  for(const item of corners){
+    if(!item||typeof item.entityId!=='string'||(baseIds&&!baseIds.includes(item.entityId))||!['start','end'].includes(item.end))throw new Error('角处理须指明轮廓线和它的哪一端');
+    const segmentIndex=item.segmentIndex??null;
+    if(segmentIndex!==null&&(!Number.isInteger(segmentIndex)||segmentIndex<0||segmentIndex>20000))throw new Error('角处理的线段序号无效');
+    const key=JSON.stringify([item.entityId,segmentIndex,item.end]);if(seen.has(key))throw new Error('同一个转角有两种角处理');seen.add(key);
+    const at={entityId:item.entityId,segmentIndex,end:item.end};
+    if(item.kind==='cut')result.push({...at,kind:'cut',first:size(item.first,'切角距离'),second:size(item.second,'切角距离')});
+    else if(item.kind==='step')result.push({...at,kind:'step',drop:size(item.drop,'台阶高度'),run:size(item.run,'台阶宽度')});
+    else if(item.kind==='fold')result.push({...at,kind:'fold'});
+    else throw new Error('不认识的角处理');
+  }
+  return result;
+}
 export function edgeWidthMap(project,ids,config){
   const definitions=seamEdgeDefinitions(project,ids);
   if(config.widthMode!=='edges')return new Map(definitions.map(edge=>[edge.key,Math.abs(config.distance)]));

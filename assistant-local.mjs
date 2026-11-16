@@ -241,6 +241,87 @@ function planDraft(sentence, scene, context, changes, rest) {
 }
 
 // ---------------------------------------------------------------- seam allowances
+// ---- notches on a named edge of a piece, and auxiliary lines
+const END_WORDS = [['left', /左端|左头|从左/, '左端'], ['right', /右端|右头|从右/, '右端'], ['top', /上端|上头|从上/, '上端'], ['bottom', /下端|下头|从下/, '下端']];
+function planNotch(sentence, scene, context) {
+  if (/辅助线/.test(sentence)) {
+    if (/(删除|删掉|去掉|清除|清掉)/.test(sentence)) return plan('删掉图上全部辅助线，其他线不动。', { steps: [{ type: 'line.deleteAuxiliary', parameters: {} }] });
+    const byId = new Map(drawnLines(scene).map(l => [l.id, l])), lines = (context.selection?.entityIds || []).map(id => byId.get(id)).filter(Boolean);
+    if (!lines.length) refuse('请先在画布上选中要设置的线，再说一遍；也可以打开左侧的“画线”工具，用“辅助线”直接点选。');
+    const back = /(恢复|取消|改回|普通线)/.test(sentence);
+    return plan('把选中的 ' + lines.length + ' 条线' + (back ? '恢复成普通线。' : '设成辅助线：显示为蓝色虚线，可以用“删除辅助线”一次删掉。'), { steps: [{ type: 'line.setAuxiliary', parameters: { entityIds: lines.map(l => l.id), auxiliary: !back } }] });
+  }
+  if (!/刀口/.test(sentence)) return null;
+  const pieces = targetPieces(sentence, scene, context, '要在哪个裁片上打刀口？');
+  if (pieces.length > 1) refuse('刀口一次只打在一个裁片上，请说出裁片名称。');
+  const piece = pieces[0], name = '“' + piece.name + '”';
+  const edges = piece.contour.flatMap(e => e.points ? e.points.map((p, i) => ({ entityId: e.entityId, segmentIndex: i, from: p, to: e.points[(i + 1) % e.points.length] })) : e.kind === 'closed-polyline' ? [] : [{ entityId: e.entityId, from: e.from, to: e.to }]);
+  if (!edges.length) refuse(name + '的轮廓上没有可以打刀口的边。');
+  const edgeWord = EDGE_WORDS.find(item => item[1].test(sentence));
+  if (!edgeWord) ask('打在哪一条边上？请说上边、下边、左边或右边，例如“' + piece.name + '上边打刀口，离左端 5”。', EDGE_WORDS.map(item => ({ label: item[2], send: sentence + ' ' + item[2] })));
+  const mid = e => ({ x: (e.from.x + e.to.x) / 2, y: (e.from.y + e.to.y) / 2 }), score = { top: e => mid(e).y, bottom: e => -mid(e).y, left: e => -mid(e).x, right: e => mid(e).x }[edgeWord[0]];
+  const edge = edges.reduce((best, item) => score(item) > score(best) ? item : best), at = { entityId: edge.entityId, ...(edge.segmentIndex === undefined ? {} : { segmentIndex: edge.segmentIndex }) };
+  if (/(删除|删掉|去掉|取消)/.test(sentence)) return plan('删掉' + name + edgeWord[2] + '上的刀口。', { steps: [{ type: 'notch.remove', parameters: at }] });
+  const count = /(两个|2\s*个|双刀)/.test(sentence) ? 2 : /(三个|3\s*个)/.test(sentence) ? 3 : 1, many = count > 1 ? { count } : {};
+  if (/中点|中间|正中/.test(sentence)) return plan('在' + name + edgeWord[2] + '的中点打 ' + count + ' 个刀口。', { steps: [{ type: 'notch.add', parameters: { ...at, ratio: 50, ...many } }] });
+  const level = Math.abs(edge.to.x - edge.from.x) >= Math.abs(edge.to.y - edge.from.y), endWord = END_WORDS.find(item => item[1].test(sentence));
+  const fits = endWord && (level ? ['left', 'right'] : ['top', 'bottom']).includes(endWord[0]);
+  if (!fits) ask('刀口离这条边的哪一端多远？例如“' + piece.name + edgeWord[2] + '打刀口，离' + (level ? '左端' : '上端') + ' 5”，或者说“中点”。', (level ? ['左端', '右端'] : ['上端', '下端']).map(word => ({ label: '离' + word + ' 5', send: piece.name + edgeWord[2] + '打刀口，离' + word + ' 5' })));
+  const tail = sentence.slice(sentence.search(endWord[1])), m = tail.match(LENGTH);
+  if (!m) ask('离' + endWord[2] + '多远？例如“' + piece.name + edgeWord[2] + '打刀口，离' + endWord[2] + ' 5”。');
+  const distance = fine(toMm(m[1], m[2])), startIs = { left: edge.from.x <= edge.to.x, right: edge.from.x > edge.to.x, top: edge.from.y >= edge.to.y, bottom: edge.from.y < edge.to.y }[endWord[0]];
+  if (!(distance >= 0)) refuse('距离不能是负数。');
+  return plan('在' + name + edgeWord[2] + '打 ' + count + ' 个刀口，离' + endWord[2] + ' ' + cm(distance) + ' cm。这条边有缝份时，刀口从缝边线向里切。', { steps: [{ type: 'notch.add', parameters: { ...at, from: startIs ? 'start' : 'end', distance, ...many } }] });
+}
+// ---- seam corner treatments: fold-back and stepped hem corners on a named edge, a cut corner at a named corner
+const CORNER_WORD = /(反转角|反折角|切角|台阶角|角处理|普通转角)/;
+const EDGE_WORDS = [['top', /上口|上边|上面|顶边|腰口|袋口|上沿/, '上边'], ['bottom', /下摆|下边|下口|底边|脚口|下沿/, '下边'], ['left', /左边|左侧/, '左边'], ['right', /右边|右侧/, '右边']];
+const CORNER_SPOTS = [['left-top', /左上/, '左上角'], ['right-top', /右上/, '右上角'], ['left-bottom', /左下/, '左下角'], ['right-bottom', /右下/, '右下角']];
+function planCorner(sentence, scene, context) {
+  if (!CORNER_WORD.test(sentence)) return null;
+  const pieces = targetPieces(sentence, scene, context, '要处理哪个裁片的转角？');
+  if (pieces.length > 1) refuse('角处理一次只做一个裁片，请说出裁片名称。');
+  const piece = pieces[0], name = '“' + piece.name + '”';
+  if (!piece.seam) refuse(name + '还没有缝份。请先加缝份，例如“给' + piece.name + '加缝份 1”。');
+  // every line or curve of the contour, and every side of a contour drawn as one closed polyline
+  const edges = piece.contour.flatMap(e => e.points ? e.points.map((p, i) => ({ entityId: e.entityId, segmentIndex: i, from: p, to: e.points[(i + 1) % e.points.length] })) : e.kind === 'closed-polyline' ? [] : [{ entityId: e.entityId, from: e.from, to: e.to }]);
+  if (edges.length < 2) refuse(name + '的轮廓没有可以处理的转角。');
+  const middle = e => ({ x: (e.from.x + e.to.x) / 2, y: (e.from.y + e.to.y) / 2 }), most = (list, value) => list.reduce((best, item) => value(item) > value(best) ? item : best);
+  const same = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < .01;
+  const edgeWord = EDGE_WORDS.find(item => item[1].test(sentence)), spotWord = edgeWord ? null : CORNER_SPOTS.find(item => item[1].test(sentence));
+  const edgeAt = side => most(edges, e => ({ top: middle(e).y, bottom: -middle(e).y, left: -middle(e).x, right: middle(e).x })[side]);
+  const vertexAt = spot => most(edges.flatMap(e => [e.from, e.to]), p => ({ 'left-top': -p.x + p.y, 'right-top': p.x + p.y, 'left-bottom': -p.x - p.y, 'right-bottom': p.x - p.y })[spot]);
+  const step = (edge, near, kind, sizes = {}) => ({ type: 'seam.corner', parameters: { groupId: piece.id, entityId: edge.entityId, ...(edge.segmentIndex === undefined ? {} : { segmentIndex: edge.segmentIndex }), ...(near ? { near: { x: near.x, y: near.y } } : {}), kind, ...sizes } });
+  const whichEdge = example => ask('是哪一条边？请说上边、下边、左边或右边，例如“' + piece.name + example + '”。', EDGE_WORDS.map(item => ({ label: item[2], send: sentence + ' ' + item[2] })));
+  if (/普通转角|恢复|(取消|去掉|删除|不要|清除).*(角处理|反转角|切角|台阶角)/.test(sentence)) {
+    if (edgeWord) return plan('把' + name + edgeWord[2] + '两端恢复成普通转角。', { steps: [step(edgeAt(edgeWord[0]), null, 'plain')] });
+    if (spotWord) { const vertex = vertexAt(spotWord[0]); return plan('把' + name + spotWord[2] + '恢复成普通转角。', { steps: [step(edges.find(e => same(e.from, vertex) || same(e.to, vertex)), vertex, 'plain')] }); }
+    ask('恢复哪个转角？例如“' + piece.name + '右下角恢复普通转角”或“' + piece.name + '上边恢复普通转角”。');
+  }
+  if (/反转角|反折角/.test(sentence)) {
+    if (!edgeWord) whichEdge('上边做反转角');
+    return plan('把' + name + edgeWord[2] + '的两端做成反转角：这条边的缝份向里折回后，两头正好和裁片对齐。', { steps: [step(edgeAt(edgeWord[0]), null, 'fold')] });
+  }
+  if (/台阶角/.test(sentence)) {
+    if (!edgeWord) whichEdge('上边做台阶角，高 0.8 宽 1.9');
+    const high = sentence.match(new RegExp('高\\s*' + NUM + '\\s*' + UNIT + '?')), wide = sentence.match(new RegExp('宽\\s*' + NUM + '\\s*' + UNIT + '?'));
+    if (!high || !wide) ask('台阶角要两个尺寸：台阶高多少、宽多少？例如“' + piece.name + edgeWord[2] + '做台阶角，高 0.8 宽 1.9”。');
+    const drop = fine(toMm(high[1], high[2])), run = fine(toMm(wide[1], wide[2])), hem = edgeAt(edgeWord[0]);
+    if (!(drop > 0 && run > 0)) refuse('台阶的高和宽都须大于 0。');
+    const sides = [hem.from, hem.to].map(vertex => ({ vertex, edge: edges.find(e => e !== hem && (same(e.from, vertex) || same(e.to, vertex))) }));
+    if (sides.some(item => !item.edge)) refuse('没有找到' + name + edgeWord[2] + '两端相邻的边。');
+    return plan('把' + name + edgeWord[2] + '的两端做成台阶角：侧缝的缝边线在这条边的缝边线以下 ' + cm(drop) + ' cm 处停住，台阶的竖边在侧缝缝边线以内 ' + cm(run) + ' cm。', { steps: sides.map(item => step(item.edge, item.vertex, 'step', { drop, run })) });
+  }
+  if (/切角/.test(sentence)) {
+    if (!spotWord) ask('切哪一个角？例如“' + piece.name + '右下角切角 1”。', CORNER_SPOTS.map(item => ({ label: item[2], send: sentence + ' ' + item[2] })));
+    const m = sentence.slice(sentence.indexOf('切角') + 2).match(LENGTH);
+    if (!m) ask('两条缝边线各截掉多长？例如“' + piece.name + spotWord[2] + '切角 1”。');
+    const first = fine(toMm(m[1], m[2])), vertex = vertexAt(spotWord[0]); if (!(first > 0)) refuse('切角的长度须大于 0。');
+    return plan('把' + name + spotWord[2] + '的缝份切角：两条缝边线在交点前各截掉 ' + cm(first) + ' cm，再连成一条斜边。', { steps: [step(edges.find(e => same(e.from, vertex) || same(e.to, vertex)), vertex, 'cut', { first, second: first })],
+      assumptions: ['两条边截掉的长度相同。要两边不同，请用画线面板里的“缝边角”工具。'] });
+  }
+  ask('要做哪一种角处理？', [{ label: '反转角', send: piece.name + '上边做反转角' }, { label: '切角', send: piece.name + '右下角切角 1' }, { label: '台阶角', send: piece.name + '上边做台阶角，高 0.8 宽 1.9' }]);
+}
 const SEAM_WORD = /(缝份|缝边|止口|做缝|放缝)/;
 /** A seam width given in the sentence: millimetres, null when there is none, undefined when it is a relative change. */
 function seamWidth(sentence, changes) {
@@ -468,7 +549,7 @@ export const EXAMPLES = [
   { label: '缝份改成 1.2 cm', send: '缝份改成1.2cm' },
   { label: '画后袋并加缝份', send: '画一个后袋 16x18cm，建成裁片，缝份1cm' },
 ];
-const HELP = '我可以按一句话完成下面这些事。每次先给出计划，你确认后才改图，随时可以撤销：\n· 按尺寸生成直筒裤：“画一条直筒裤，腰围76 臀围96 裤长102”\n· 改尺寸重算：“裤长加2，腰围减1”“脚口改成40”“后翘2.5”\n· 缝份：“缝份改成1.2”“脚口折边4”“给后袋加1cm缝份”“去掉后袋的缝份”\n· 画部件：“画一个后袋 16x18，建成裁片，缝份1”“画一条30cm的横线”\n· 裁片：“把后袋向右移动10”“复制后袋”“后袋旋转90度”“删除后袋”“把选中的线建成裁片”\n· 选中的线：“向下平行3，2条”“分成4份”“在中点作垂线5，向上”“右端加长2”；选中两条直线后“做圆角2”“角连接”；“画一个半径5的圆”\n· 其他：“撤销”“重做”“保存为PRJ”“全图显示”“现在的尺寸”\n数字可以带单位（mm、cm、英寸，英寸可以写 3/8、1 3/8）；没写单位的数字第一次出现时，我会问是厘米还是英寸并记住，说“按厘米”或“按英寸”可以更换。目前用的是本机内置指令，只认识上面这类说法；接入大模型服务后可以理解更自由的描述。';
+const HELP = '我可以按一句话完成下面这些事。每次先给出计划，你确认后才改图，随时可以撤销：\n· 按尺寸生成直筒裤：“画一条直筒裤，腰围76 臀围96 裤长102”\n· 改尺寸重算：“裤长加2，腰围减1”“脚口改成40”“后翘2.5”\n· 缝份：“缝份改成1.2”“脚口折边4”“给后袋加1cm缝份”“去掉后袋的缝份”\n· 缝边角处理：“后袋上边做反转角”“后片右下角切角1”“后袋上边做台阶角，高0.8 宽1.9”“后袋上边恢复普通转角”\n· 刀口和辅助线：“后袋上边打刀口，离左端5”“后片左边中点打刀口”“删掉后袋上边的刀口”；选中线后“设为辅助线”；“删除辅助线”\n· 画部件：“画一个后袋 16x18，建成裁片，缝份1”“画一条30cm的横线”\n· 裁片：“把后袋向右移动10”“复制后袋”“后袋旋转90度”“删除后袋”“把选中的线建成裁片”\n· 选中的线：“向下平行3，2条”“分成4份”“在中点作垂线5，向上”“右端加长2”；选中两条直线后“做圆角2”“角连接”；“画一个半径5的圆”\n· 其他：“撤销”“重做”“保存为PRJ”“全图显示”“现在的尺寸”\n数字可以带单位（mm、cm、英寸，英寸可以写 3/8、1 3/8）；没写单位的数字第一次出现时，我会问是厘米还是英寸并记住，说“按厘米”或“按英寸”可以更换。目前用的是本机内置指令，只认识上面这类说法；接入大模型服务后可以理解更自由的描述。';
 function describe(scene) {
   const lines = [];
   for (const draft of scene.drafts || []) lines.push('按尺寸生成的直筒裤：' + ['waist', 'hip', 'thigh', 'hipDepth', 'crotchDepth', 'kneeDepth', 'length'].map(key => INFO[key].label + ' ' + cm(draft.input.measurements[key]) + ' cm').join('，') + '；' +
@@ -503,7 +584,7 @@ function planSentence(sentence, scene, context, original) {
   if (/^(现在|当前|目前)?的?(尺寸|参数|状态|情况|画布)(是多少|是什么|怎么样|有什么|有哪些)?\??$/.test(sentence) || /^(画布上)?有(什么|哪些)(裁片|东西|图形)?\??$/.test(sentence)) return plan(describe(scene));
   for (const [pattern, id, reply] of ACTIONS) if (pattern.test(sentence.replace(/\s/g, ''))) return plan(reply, { actions: [{ id }] });
   const { changes, rest } = extractChanges(sentence);
-  return planText(sentence, scene, context, original) || planRectangle(sentence, scene, context, changes) || planPieceFromLines(sentence, scene, context, changes) || planSeam(sentence, scene, context, changes)
+  return planNotch(sentence, scene, context) || planCorner(sentence, scene, context) || planText(sentence, scene, context, original) || planRectangle(sentence, scene, context, changes) || planPieceFromLines(sentence, scene, context, changes) || planSeam(sentence, scene, context, changes)
     || (changes.length || NEW_PANTS.test(sentence) ? planDraft(sentence, scene, context, changes, rest) : null)
     || planConstruct(sentence, scene, context, changes) || planLine(sentence, scene) || planPieceOperation(sentence, scene, context) || unfinished(sentence, scene)
     || plan('这句话我还不能执行。目前用的是本机内置指令，只认识固定的说法；说“帮助”可以看到全部例子。接入大模型服务后可以理解更自由的描述。', { choices: EXAMPLES.slice(0, 3), unrecognised: true });

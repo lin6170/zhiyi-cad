@@ -54,7 +54,9 @@ export function fitClampedSpline(points){
  * fit points (first and last chord times 1.5) and each end control point is repeated. A curve made by
  * fitClampedSpline keeps this form under moves, rotations and mirroring; editing its control points breaks it.
  */
-export function nativeFitPoints(curve,tolerance=1e-6){
+// The knots are compared as shares of the whole length. Curves read from real ET files, stored in single precision at
+// coordinates of several metres, differ from the exact rule by up to 3e-5 there; 1e-4 accepts them and nothing else was seen.
+export function nativeFitPoints(curve,tolerance=1e-4){
   if(!curve||curve.kind!=='bspline'||curve.degree!==3)return null;
   const c=curve.controlPoints,k=curve.knots;
   if(c.length<4||c.length>130||k.length!==c.length+4)return null;

@@ -1,16 +1,34 @@
 import { pathMetrics, stationOnPath } from './path-metrics.mjs';
 import { seamWidthAt } from './seam-widths.mjs';
 
-const defaults={mode:'start',position:25,side:1,count:1,spacing:3,depth:3,shape:'line',width:3,targetSeamId:null};
+const defaults={mode:'start',position:25,side:1,count:1,spacing:3,depth:3,shape:'line',width:3,targetSeamId:null,direction:null};
 export function notchSettings(options={}){
   const config=Object.fromEntries(Object.keys(defaults).map(key=>[key,options[key]??defaults[key]]));
   if(!['start','end','ratio'].includes(config.mode)||!Number.isFinite(config.position)||config.position<0||config.position>(config.mode==='ratio'?100:1e8))throw new Error('刀口位置须为有效距离或 0–100% 比例');
   if(![-1,1].includes(config.side)||![1,2,3].includes(config.count)||!['line','v'].includes(config.shape))throw new Error('刀口方向、数量或形状无效');
   for(const key of ['spacing','depth','width'])if(!Number.isFinite(config[key])||config[key]<.01||config[key]>1e5)throw new Error('刀口深度、宽度和间距须在 0.01 至 100000 mm 之间');
   if(config.targetSeamId!==null&&typeof config.targetSeamId!=='string')throw new Error('刀口缝份引用无效');
+  // A notch normally stands square to its line. ET also keeps notches that point another way (along a line that meets
+  // the edge there); `direction` is that way as a vector pointing from the net line outwards.
+  if(config.direction!==null){
+    const d=config.direction,length=d&&Number.isFinite(d.x)&&Number.isFinite(d.y)?Math.hypot(d.x,d.y):0;
+    if(!(length>1e-9))throw new Error('刀口方向无效');
+    config.direction={x:d.x/length,y:d.y/length};
+  }
   return config;
 }
 const offset=(p,v,d)=>({x:p.x+v.x*d,y:p.y+v.y*d});
+/** The place and direction of a line at a distance along it. An ET curve has no direction exactly at its ends (its end control points coincide): there the direction just inside the end is used. */
+function stationAt(metrics,position,closed){
+  try{return stationOnPath(metrics,position);}
+  catch(error){
+    // only the two ends of an open line: a corner of a closed outline really has no single direction
+    const atStart=position<=.02,atEnd=metrics.total-position<=.02;
+    if(closed||(!atStart&&!atEnd))throw error;
+    const inside=stationOnPath(metrics,atStart?Math.min(metrics.total,position+.02):Math.max(0,position-.02)),exact=stationOnPath(metrics,position,{pointOnly:true});
+    return {...inside,point:exact.point,position:Math.max(0,Math.min(metrics.total,position))};
+  }
+}
 const cross=(a,b)=>a.x*b.y-a.y*b.x;
 function projectToSeam(project,base,station,normal,recipe){
   if(!recipe||recipe.status!=='current'||!recipe.baseEntityIds.includes(base.id))throw new Error('目标缝份缺失、失效或不属于此基准线');
@@ -42,8 +60,8 @@ export function generateNotches(project,baseEntityId,options={}){
   const target=config.targetSeamId?(project.seamAllowances||[]).find(recipe=>recipe.id===config.targetSeamId):null;
   const stations=[],paths=[];
   for(let i=0;i<config.count;i++){
-    const station=stationOnPath(metrics,center+(i-(config.count-1)/2)*config.spacing);
-    const normal={x:-station.tangent.y*config.side,y:station.tangent.x*config.side};
+    const station=stationAt(metrics,center+(i-(config.count-1)/2)*config.spacing,Boolean(base.closed));
+    const normal=config.direction?{...config.direction}:{x:-station.tangent.y*config.side,y:station.tangent.x*config.side};
     let anchor=station.point,direction=normal,projectionDistance=0;
     if(config.targetSeamId){
       const projected=projectToSeam(project,base,station,normal,target);
