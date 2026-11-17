@@ -1022,6 +1022,23 @@ const withoutWords = sentence => sentence.replace(/(选中的?|所选的?|选的
 
 // ---- grading by a size table (v57): the sizes, the rows of the size table, the rule of a corner of a piece
 const GRADE_WORD = /(放码|号型|尺寸表|档差|推板|推档)/;
+// v68: sentences about ET's 对齐 / 对齐移动点 (they need not say 放码)
+const LOCK_GRADE = /锁定|解锁|锁住|整码保持|[A-Za-z0-9]码[^,，;；]*?(往|向)(左|右|上|下)/;   // v69: ET's locks and moves in one size
+// the sizes a sentence names (longest names first, so that L is not found inside XL)
+function sizesNamed(raw, names) {
+  let rest = raw; const found = [];
+  for (const name of [...names].sort((a, b) => b.length - a.length)) { const pattern = new RegExp('(?<![A-Za-z0-9])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9])'); if (pattern.test(rest)) { found.push(name); rest = rest.replace(pattern, ' '); } }
+  return names.filter(name => found.includes(name));
+}
+const ALIGN_GRADE = /(各码|叠码|网状).*对齐|对齐.*(各码|叠码)|^(取消|去掉|清除)(各码的?|放码的?)?对齐$|(左上|右上|左下|右下)角?相对(于)?(左上|右上|左下|右下)角?/;
+// a corner of a piece's outline, as the rule sentences pick it: the outline point farthest that way
+function cornerOf(piece, spot) {
+  const edges = piece.contour.flatMap(e => e.points ? e.points.map((p, i) => ({ entityId: e.entityId, from: p, to: e.points[(i + 1) % e.points.length] })) : e.kind === 'closed-polyline' ? [] : [{ entityId: e.entityId, from: e.from, to: e.to }]);
+  if (!edges.length) refuse('“' + piece.name + '”的轮廓太复杂，请在放码面板里点线来设。');
+  const vertex = edges.flatMap(e => [e.from, e.to]).reduce((best, p) => { const value = q => ({ 'left-top': -q.x + q.y, 'right-top': q.x + q.y, 'left-bottom': -q.x - q.y, 'right-bottom': q.x - q.y })[spot[0]]; return value(p) > value(best) ? p : best; });
+  const edge = edges.find(e => Math.hypot(e.from.x - vertex.x, e.from.y - vertex.y) < .01 || Math.hypot(e.to.x - vertex.x, e.to.y - vertex.y) < .01);
+  return { entityId: edge.entityId, at: { x: vertex.x, y: vertex.y } };
+}
 // (names of sizes, of table rows and formulas keep their capitals: the sentence as typed, with only its punctuation made plain)
 const plain = text => [...String(text)].map(c => { const code = c.codePointAt(0); return code >= 0xff01 && code <= 0xff5e ? String.fromCodePoint(code - 0xfee0) : code === 0x3000 ? ' ' : c; }).join('').replace(/、/g, ',').replace(/[。!]/g, ';').replace(/\s+/g, ' ').trim();
 const inCm = (raw, unit) => Math.round(toMm(raw, unit) / 10 * 1e6) / 1e6;
@@ -1033,7 +1050,7 @@ function describeGradingOf(grading) {
 function planGrading(sentence, scene, context, original) {
   const grading = scene.grading || null, tight = sentence.replace(/\s/g, '');
   // (“后袋左下角固定” is about grading when the drawing has a grading plan)
-  if (!GRADE_WORD.test(sentence) && !(grading && /固定点?$/.test(tight) && CORNER_SPOTS.some(item => item[1].test(sentence)))) return null;
+  if (!GRADE_WORD.test(sentence) && !(grading && /固定点?$/.test(tight) && CORNER_SPOTS.some(item => item[1].test(sentence))) && !(grading && ALIGN_GRADE.test(tight)) && !(grading && LOCK_GRADE.test(tight))) return null;
   const raw = plain(original ?? sentence);
   const none = () => refuse('这张图还没有按尺寸表放码的方案。先说号型，例如“放码：号型 S M L XL，基码 M”。', { choices: GRADE_EXAMPLES.slice(0, 1) });
   if (/^(现在|当前|目前)?的?放码(方案)?(情况|状态|是什么|有哪些|怎么样)?\??$/.test(tight)) return plan(grading ? describeGradingOf(grading) : '这张图还没有按尺寸表放码的方案。', { choices: grading ? [] : GRADE_EXAMPLES.slice(0, 1) });
@@ -1069,6 +1086,55 @@ function planGrading(sentence, scene, context, original) {
     const parameters = { name, ...(first ? { base: (first[1] ? -1 : 1) * inCm(first[2], first[3]) } : {}), ...(step ? { step: (step[1] ? -1 : 1) * inCm(step[2], step[3]) } : {}) };
     return plan((known ? '把尺寸表的“' + name + '”改成' : '尺寸表加一项“' + name + '”：') + (first ? '基码 ' + cm(parameters.base * 10) + ' cm' : '') + (step ? (first ? '，' : '') + '每大一个码' + (parameters.step < 0 ? '减 ' : '加 ') + cm(Math.abs(parameters.step) * 10) + ' cm' : (known ? '，各码一起平移' : '，各码相同')) + '。',
       { steps: [{ type: 'grade.setMeasure', parameters }], assumptions: !known && !step ? ['没有说档差，各码先填成一样；之后可以说“尺寸表 ' + name + ' 档差 4”。'] : [] });
+  }
+  // v68: ET's 对齐 / 对齐移动点 on corners of a piece: 后片各码按右上角对齐 · 后片右下角相对右上角每码横向放 0.5
+  if (grading && /对齐/.test(tight) && /^(取消|去掉|清除|撤销)/.test(tight) && !CORNER_SPOTS.some(item => item[1].test(sentence))) return plan(grading.alignment ? '取消各码的对齐，叠码恢复原样。' : '各码现在没有对齐，不用取消。', grading.alignment ? { steps: [{ type: 'grade.align', parameters: { clear: true } }] } : {});
+  // v69: ET's 锁定放码点, 解锁放码点, 锁定解锁当前层 and a point moved in one size
+  if (grading && LOCK_GRADE.test(tight)) {
+    const named = sizesNamed(raw, grading.sizes), corner = CORNER_SPOTS.find(item => item[1].test(sentence)), unlock = /解锁/.test(tight);
+    if (named.includes(grading.baseSize)) refuse('基码 ' + grading.baseSize + ' 的点不能锁定或单独改（ET 也不锁基码上的点）；基码要改就直接改图。');
+    const move = tight.match(/(往|向)(左|右|上|下)(?:移|挪|移动|放)?(-?\d+(?:\.\d+)?)(mm|毫米|cm|厘米|公分)?/);
+    if (move && corner) {
+      if (named.length !== 1) ask('在哪一个号型里移动？例如“XL 码的' + corner[2] + '往右移 10 毫米”。', grading.sizes.filter(name => name !== grading.baseSize).slice(0, 6).map(name => ({ label: name + ' 码', send: raw.replace(/^/, name + '码 ') })));
+      const pieces = targetPieces(sentence, scene, context, '是哪个裁片的转角？'); if (pieces.length > 1) refuse('一次改一个裁片的点，请说出裁片名称。');
+      const piece = pieces[0], at = cornerOf(piece, corner), amount = toMm(move[3], move[4] || (bareUnit === 'mm' ? 'mm' : 'cm')), dx = move[2] === '右' ? amount : move[2] === '左' ? -amount : 0, dy = move[2] === '上' ? amount : move[2] === '下' ? -amount : 0;
+      return plan('在 ' + named[0] + ' 码里把“' + piece.name + '”' + corner[2] + '往' + move[2] + '移 ' + cm(amount) + ' cm（别的号型不变）；和 ET 一样，这个点和经过它的线的另一端在 ' + named[0] + ' 码里锁定，以后重新生成不会改回去。',
+        { steps: [{ type: 'grade.moveInSize', parameters: { size: named[0], at: at.at, ...(dx ? { dx } : {}), ...(dy ? { dy } : {}) } }] });
+    }
+    if (!corner) {   // a whole size (ET's 锁定解锁当前层)
+      if (!named.length) ask('锁定哪个号型？例如“锁定 XL 码”（整码保持），或者“锁定 XL 码的右下角”（只锁一个点）。');
+      if (named.length > 1) refuse('整码锁定一次一个号型，请分开说。');
+      const locked = (grading.lockedSizes || []).includes(named[0]);
+      if (unlock && !locked) return plan(named[0] + ' 码没有整码锁定，不用解锁。');
+      if (!unlock && locked) return plan(named[0] + ' 码已经整码锁定了。');
+      return plan(unlock ? named[0] + ' 码解锁，重新按放码规则生成（单独锁定的点仍然锁定）。' : named[0] + ' 码整码锁定（ET 的“锁定解锁当前层”）：以后改规则、改基码，这个码都不变。',
+        { steps: [{ type: 'grade.lockSize', parameters: { size: named[0], locked: !unlock } }] });
+    }
+    const pieces = targetPieces(sentence, scene, context, '是哪个裁片的转角？'); if (pieces.length > 1) refuse('一次锁一个裁片的点，请说出裁片名称。');
+    const piece = pieces[0], at = cornerOf(piece, corner), where = named.length ? named.join('、') + ' 码' : (unlock ? '全部号型' : '除基码以外的全部号型');
+    return plan('“' + piece.name + '”' + corner[2] + '在' + where + '里' + (unlock ? '解锁，下次生成时回到规则给的位置。' : '锁定在现在的位置（ET 的“锁定放码点”），以后改规则、改基码都不再动。'),
+      { steps: [{ type: unlock ? 'grade.unlock' : 'grade.lock', parameters: { at: at.at, ...(named.length ? { sizes: named } : {}) } }] });
+  }
+  const relative = tight.match(/(左上|右上|左下|右下)角?相对(?:于)?(左上|右上|左下|右下)角?/);
+  if (grading && relative) {
+    const pieces = targetPieces(sentence, scene, context, '是哪个裁片的转角？'); if (pieces.length > 1) refuse('对齐移动点一次设一个裁片，请说出裁片名称。');
+    const piece = pieces[0], key = word => CORNER_SPOTS.find(item => item[1].test(word)), target = key(relative[1]), base = key(relative[2]);
+    if (target[0] === base[0]) refuse('目标点和对齐点是同一个角。');
+    const number = words => { const m = raw.match(new RegExp('(?:' + words + ')(?:方向)?\\s*(?:放|移|加|为|是|=|:)?\\s*(-?)\\s*' + NUM + '\\s*' + UNIT + '?')); return m ? (m[1] ? -1 : 1) * inCm(m[2], m[3]) : undefined; };
+    const x = number('横向|水平|左右'), y = number('纵向|竖直|垂直|上下');
+    if (x === undefined && y === undefined) ask('“' + piece.name + '”' + target[2] + '相对' + base[2] + '每码横向、纵向各放多少？例如“' + piece.name + target[2] + '相对' + base[2] + '每码横向放 0.5 纵向 0”（厘米，向右、向上为正）。');
+    const keep = /保留|写进规则/.test(tight), a = cornerOf(piece, base), t = cornerOf(piece, target);
+    return plan('按“' + piece.name + '”' + base[2] + '把各码对齐，' + target[2] + '在对齐后每大一个码' + [x !== undefined ? '横向移动 ' + cm(x * 10) + ' cm' : '', y !== undefined ? '纵向移动 ' + cm(y * 10) + ' cm' : ''].filter(Boolean).join('、') + '（ET 的“点对齐移动点规则”）' + (keep ? '；先把对齐写进外轮廓角点的规则（保留）。' : '。'),
+      { steps: [{ type: 'grade.alignedMove', parameters: { entityId: a.entityId, at: a.at, mode: 'point', target: t.at, ...(x !== undefined ? { x } : {}), ...(y !== undefined ? { y } : {}), ...(keep ? { keep: true } : {}) } }] });
+  }
+  if (grading && /对齐/.test(tight) && /(各码|放码|推板|叠码|网状|按)/.test(tight)) {
+    const corner = CORNER_SPOTS.find(item => item[1].test(sentence));
+    if (corner) {
+      const pieces = targetPieces(sentence, scene, context, '是哪个裁片的转角？'); if (pieces.length > 1) refuse('对齐一次对一个裁片，请说出裁片名称。');
+      const piece = pieces[0], at = cornerOf(piece, corner), axis = /只对齐?(高低|上下|高度)|高低对齐|上下对齐/.test(tight) ? 'y' : /只对齐?(左右|横向)|左右对齐/.test(tight) ? 'x' : 'both', keep = /保留|写进规则/.test(tight);
+      return plan('“' + piece.name + '”的各码按' + corner[2] + '对齐' + (axis === 'y' ? '，只对齐高低' : axis === 'x' ? '，只对齐左右' : '') + (keep ? '，并把对齐写进外轮廓角点的规则（ET 的“保留”）：' + corner[2] + (axis === 'y' ? '的高低不再动，左右照旧。' : axis === 'x' ? '的左右不再动，高低照旧。' : '成为不动点。') + '这些角点的规则成了数，不再跟着尺寸表变。' : '（只改看的样子，ET 的“对齐”）。预览叠码时就这样画；说“取消放码对齐”恢复。'),
+        { steps: [{ type: 'grade.align', parameters: { entityId: at.entityId, at: at.at, mode: 'point', ...(axis !== 'both' ? { axis } : {}), ...(keep ? { keep: true } : {}) } }] });
+    }
   }
   // 后袋右上角放码 水平 袋宽 竖直 袋深 · 左下角固定 · 去掉右上角的放码规则
   const spot = CORNER_SPOTS.find(item => item[1].test(sentence));

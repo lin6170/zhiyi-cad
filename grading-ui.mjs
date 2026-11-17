@@ -2,6 +2,9 @@ import { createGradingPlan, createTablePlan, normalizeGradingPlan, gradePoints, 
 import { toDxf } from './geometry.mjs';
 import { stationsOf, placeOnLine } from './grading-table.mjs';
 import { parseFormula, formulaNames } from './size-formula.mjs';
+import { alignmentPlace, alignmentTransforms, transformPoint, bakeAlignment, alignedMove, pieceOfEntity } from './grading-align.mjs';
+import { lockPoints, unlockPoints, lockSize, moveInSize, describeLocks } from './grading-locks.mjs';
+import { generateGradedSize } from './grading.mjs';
 const colors=['#4da6ce','#d78cb5','#d89545','#77aa69','#a28ad4','#d97465','#5bb4a8','#9b9953','#6881cd','#b7799e','#a9a55e','#80a4a1'];
 export function createGradingPanel({getProject,getSelection,commit,setTool,getTool,render,fit,notify,download,getDxfOptions=()=>({})}){
   const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value)),format=value=>Number.isFinite(value)?value.toFixed(3):'—';
@@ -13,11 +16,13 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
   const currentRule=()=>draft?.rules.find(rule=>rule.entityId===entityId&&rule.index===pointIndex);
   // A plan that grades by a size table (carried from an ET file): its size table and the formulas of the points of the current line.
   const isTable=()=>draft?.method==='table';
-  let tableKey='',sizesKey='',addingOnLine=false;
+  let tableKey='',sizesKey='',addingOnLine=false,aligning='',locking='';   // locking: the next click locks, unlocks or moves a point in one size (v69)   // aligning: the next click aligns on a point or a line, or picks the target of 对齐移动点 (v68)
   const lineName=id=>getProject().entities.find(entity=>entity.id===id)?.name||'缺失的线';
   const typingIn=holder=>{const active=document.activeElement;return Boolean(active&&active.tagName==='INPUT'&&holder.contains(active));};
   const tableSizes=()=>[{label:draft.baseSize,slot:draft.sizeTable.baseSlot,base:true},...draft.sizes].sort((a,b)=>a.slot-b.slot);
-  const tableChanged=()=>{draftEdited=true;preview=null;refresh();render();};
+  // v68: with 单步展开 ticked a change is previewed at once, as ET expands a changed rule at once when its 单步展开 is ticked
+  const singleStep=()=>{if($('grade-single-step')?.checked&&draft)try{compute();}catch(error){notify(error.message);}};
+  const tableChanged=()=>{draftEdited=true;preview=null;refresh();render();singleStep();};
   // Points of several lines on one place usually carry the same rule (in an ET file each end at a corner has its own copy).
   // They are changed together, as in ET where a rule is set on every point at the place: otherwise the piece would come apart there.
   const placeOf=anchor=>{if(anchor.between!==undefined)return anchor.at;const entity=getProject().entities.find(item=>item.id===anchor.entityId),stations=entity&&stationsOf(entity);return stations?.points[anchor.index]||null;};
@@ -89,11 +94,12 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
     const ruleBox=(anchor,order,text,point)=>{
       const box=document.createElement('div');box.className='grade-anchor';box.dataset.anchor=order;const title=document.createElement('strong');title.textContent=text;
       const turned=Math.abs(anchor.axisX[0]-1)>1e-4||Math.abs(anchor.axisX[1])>1e-4;if(turned)title.textContent+=' · 方向转了 '+(Math.atan2(anchor.axisX[1],anchor.axisX[0])*180/Math.PI).toFixed(1)+'°';
+      if(anchor.unit==='in'){title.textContent+=' · 英寸规则';title.title='这条规则是 ET 按英寸写的：公式里的数字按英寸算，尺寸表的名称仍按厘米。';}
       box.append(title,placed(box,point));
       for(const [axis,label] of [['x','水平'],['y','竖直']]){const row=document.createElement('label'),input=document.createElement('input');row.textContent=label;input.value=anchor[axis];input.maxLength=300;input.setAttribute('aria-label',title.textContent+' '+label+'公式');input.dataset.axis=axis;
         input.onchange=()=>{
           try{checkFormula(input.value);}catch(error){notify('公式“'+input.value+'”不能用：'+error.message);input.value=anchor[axis];return;}
-          const value=input.value.trim(),twins=twinsOf(anchor);anchor[axis]=value;for(const twin of twins)twin[axis]=value;draftEdited=true;preview=null;refreshStatusOnly();render();
+          const value=input.value.trim(),twins=twinsOf(anchor);anchor[axis]=value;for(const twin of twins)twin[axis]=value;draftEdited=true;preview=null;refreshStatusOnly();render();singleStep();
           if(twins.length)notify('同一位置上另外 '+twins.length+' 个点带着相同的规则，一起改了。');
         };row.append(input);box.append(row);}
       const turnRow=document.createElement('label'),turnInput=document.createElement('input'),degreesOf=()=>Number((Math.atan2(anchor.axisX[1],anchor.axisX[0])*180/Math.PI).toFixed(3));
@@ -165,7 +171,7 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
     sourceStamp=stamp;
     const saved=$('grade-saved');saved.replaceChildren(new Option(draft&&!selectedId?'未保存草稿':'未选择方案',''));for(const plan of project.gradingPlans||[])saved.add(new Option(plan.name+' · '+(plan.method==='table'?(plan.status==='error'?'有问题':'按尺寸表'):{current:'已计算',review:'需核对',error:'有失效尺码',stale:'待计算'}[plan.status]||'待计算'),plan.id));saved.value=selectedId;
     $('grade-controls').hidden=!draft;if(!draft)return;
-    $('grade-table-controls').hidden=!isTable();$('grade-point-controls').hidden=isTable();
+    $('grade-table-controls').hidden=!isTable();$('grade-point-controls').hidden=isTable();if(isTable()){refreshAlign();refreshLocks();}
     $('grade-save').textContent=selectedId?'更新放码方案':'保存放码方案';$('grade-delete').hidden=!selectedId;
     const sizeKey=JSON.stringify(draft.sizes.map(size=>size.id));
     if(sizeRowsKey!==sizeKey){
@@ -205,6 +211,40 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
   $('grade-create').onclick=action(()=>{draft=createGradingPlan(getProject(),getSelection(),()=>crypto.randomUUID());selectedId='';entityId=draft.sources[0].entityId;pointIndex=0;preview=null;lastProject=getProject();sourceStamp=sourceSignature();draftEdited=true;baseChanged=false;loadFields();setTool('grading');refresh();render();});
   $('grade-create-table').onclick=action(()=>{draft=createTablePlan(getProject(),()=>crypto.randomUUID());selectedId='';entityId='';pointIndex=0;preview=null;lastProject=getProject();sourceStamp=sourceSignature();draftEdited=true;baseChanged=false;loadFields();setTool('grading');refresh();render();});
   $('grade-table-on-line').onclick=()=>{addingOnLine=!addingOnLine;refresh();if(addingOnLine)notify('在画布上点这条线上要加放码点的位置。');};
+  // v68: ET's 对齐, 线对齐 and 对齐移动点 (grading-align.mjs)
+  function refreshAlign(){
+    const a=draft.alignment,where=a?'X '+format(a.at.x)+' / Y '+format(a.at.y):'';
+    $('grade-align-state').textContent=a?(a.mode==='point'?'各码按“'+lineName(a.entityId)+'”上的点（'+where+'）对齐'+(a.axis==='y'?'，只对齐高低':a.axis==='x'?'，只对齐左右':'')+'。':'各码按直线“'+lineName(a.entityId)+'”对齐（'+where+'）。'):'各码没有对齐。';
+    $('grade-align-point').textContent=aligning==='point'?'取消（正在等你点对齐点）':'按点对齐';$('grade-align-line').textContent=aligning==='line'?'取消（正在等你点对齐线）':'按线对齐';
+    $('grade-align-move').textContent=aligning==='move'?'取消（正在等你点目标点）':'对齐移动点：点目标点';$('grade-align-clear').disabled=!a;
+  }
+  function applyAlign(alignment,keep){
+    const project=getProject();
+    if(keep){const baked=bakeAlignment(project,normalizeGradingPlan(draft),alignment);draft=normalizeGradingPlan(baked.value);notify('对齐写进了规则（ET 的“保留”）：外轮廓 '+baked.changed+' 个角点改了规则，'+baked.fixed+' 个角点成了不动点。曲线中间的点、线上的放码点和内部线的规则没改，和 ET 一样。');}
+    else{alignmentPlace(project,alignment);draft.alignment=alignment;notify('各码按这里对齐了（只改看的样子）。点“预览各尺码”看叠码，用“取消对齐”恢复。');}
+    tableChanged();
+  }
+  $('grade-align-point').onclick=()=>{aligning=aligning==='point'?'':'point';refresh();if(aligning)notify('在画布上点裁片上的一个点（线的端点或曲线经过的点），各码按它对齐。');};
+  $('grade-align-line').onclick=()=>{aligning=aligning==='line'?'':'line';refresh();if(aligning)notify('在画布上点裁片上一条直线的某个位置，各码按这条线对齐。');};
+  $('grade-align-move').onclick=()=>{if(!draft?.alignment&&aligning!=='move'){notify('先按点或按线对齐，再设对齐移动点。');return;}aligning=aligning==='move'?'':'move';refresh();if(aligning)notify('点同一片上的目标点：它在对齐后的样子里每大一个码移动上面填的量。');};
+  $('grade-align-clear').onclick=action(()=>{if(!draft)return;delete draft.alignment;aligning='';tableChanged();notify('取消了对齐。');});
+  // v69: ET's 锁定放码点, 解锁放码点, 锁定解锁当前层, and a point moved in one size (grading-locks.mjs)
+  const lockSizeId=()=>$('grade-lock-size').value,make=plan=>sizeId=>generateGradedSize(getProject(),plan,sizeId),labelOfSize=id=>(draft.sizes.find(size=>size.id===id)||{}).label||id;
+  function refreshLocks(){
+    const select=$('grade-lock-size'),wanted=select.value,options=[['','除基码以外的全部号型'],...draft.sizes.slice().sort((a,b)=>a.slot-b.slot).map(size=>[size.id,size.label])];
+    if(select.options.length!==options.length||options.some(([value,text],i)=>select.options[i].value!==value||select.options[i].textContent!==text)){select.replaceChildren(...options.map(([value,text])=>Object.assign(document.createElement('option'),{value,textContent:text})));select.value=options.some(([value])=>value===wanted)?wanted:'';}
+    const d=describeLocks(draft),points=d.lockedPoints.map(item=>item.size+' '+item.points+' 个').join('、');
+    $('grade-lock-state').textContent=points||d.lockedSizes.length?(points?'锁定的点：'+points+'。':'')+(d.lockedSizes.length?'整码锁定：'+d.lockedSizes.join('、')+'。':''):'没有锁定的点。';
+    const id=lockSizeId(),whole=(draft.lockedSizes||[]).includes(id);
+    $('grade-lock-size-toggle').disabled=!id;$('grade-lock-size-toggle').textContent=id?(whole?'解锁这个码（'+labelOfSize(id)+'）':'锁定这个码（'+labelOfSize(id)+'）'):'锁定这个码（先选一个号型）';
+    $('grade-lock-point').textContent=locking==='lock'?'取消（正在等你点要锁定的点）':'锁定放码点';$('grade-unlock-point').textContent=locking==='unlock'?'取消（正在等你点要解锁的点）':'解锁放码点';
+    $('grade-lock-move').textContent=locking==='move'?'取消（正在等你点要移动的点）':'在这个码里移动点：点要移动的点';
+  }
+  $('grade-lock-size').onchange=()=>refresh();
+  $('grade-lock-point').onclick=()=>{locking=locking==='lock'?'':'lock';aligning='';refresh();if(locking)notify('在画布上点裁片上的一个点：它在'+(lockSizeId()?'“'+labelOfSize(lockSizeId())+'”':'除基码以外的全部号型')+'里锁定在现在的位置。');};
+  $('grade-unlock-point').onclick=()=>{locking=locking==='unlock'?'':'unlock';aligning='';refresh();if(locking)notify('在画布上点一个锁定的点：它在'+(lockSizeId()?'“'+labelOfSize(lockSizeId())+'”':'全部号型')+'里解锁。');};
+  $('grade-lock-move').onclick=()=>{if(!lockSizeId()&&locking!=='move'){notify('先在“号型”里选一个号型（不是基码），再在这个码里移动点。');return;}locking=locking==='move'?'':'move';aligning='';refresh();if(locking)notify('在画布上点要移动的点：它在“'+labelOfSize(lockSizeId())+'”里移动上面填的毫米数，并且锁定。');};
+  $('grade-lock-size-toggle').onclick=action(()=>{const id=lockSizeId();if(!draft||!id)return;const whole=(draft.lockedSizes||[]).includes(id),plan=normalizeGradingPlan(draft),result=lockSize(getProject(),plan,id,!whole,make(plan));draft=normalizeGradingPlan(result.value);tableChanged();notify(whole?'“'+labelOfSize(id)+'”解锁了，重新按规则生成（单独锁定的点仍然锁定）。':'“'+labelOfSize(id)+'”整码锁定了：以后改规则、改基码，这个码都不变。');});
   $('grade-table-smaller').onclick=action(()=>addTableSize(true));$('grade-table-larger').onclick=action(()=>addTableSize(false));$('grade-table-add-row').onclick=action(addTableRow);
   $('grade-saved').onchange=action(()=>{selectedId=$('grade-saved').value;if(!selectedId){reset();refresh();render();return;}const plan=getProject().gradingPlans.find(plan=>plan.id===selectedId);draft=normalizeGradingPlan(plan);preview=gradingResults(getProject(),plan);draftEdited=false;baseChanged=false;loadFields();refresh();render();});
   for(const [id,key] of [['grade-name','name'],['grade-base-size','baseSize'],['grade-interpolation','interpolation']])$(id).oninput=()=>{if(!draft)return;draft[key]=$(id).value;if(key!=='name')pointKey='';invalidate();};
@@ -238,14 +278,17 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
   });
   $('grade-report').onclick=action(()=>{if(!preview)throw new Error('请先预览');download(JSON.stringify({format:'zhiyi-grading-report',version:1,definition:normalizeGradingPlan(draft),sizes:preview.map((result,index)=>({summary:result.summary,dxfLayerPrefix:'SIZE_'+String(index+1).padStart(2,'0')+'_'+result.size.label.replace(/[^A-Za-z0-9_-]/g,'_')+'_',inspection:result.inspection,seamChecks:result.project?.seamChecks}))},null,2),filename(getProject().name)+'-放码报告.json','application/json');});
   function draw({node,overlay,screen,pathData,scale}){
+    // v68: with an alignment every size of that piece is drawn moved (and turned) onto the base size, as ET's 对齐 / 线对齐 show it
+    let aligned=null;if(draft&&draft.alignment&&preview&&$('grade-show').checked)try{aligned=alignmentTransforms(getProject(),draft.alignment,preview);}catch(error){aligned=null;}
     if(draft&&$('grade-show').checked&&preview)preview.forEach((result,index)=>{
+      const turn=aligned&&aligned.transforms.get(result.size.id),place=entity=>turn&&aligned.entityIds.has(entity.id)?entity.points.map(p=>transformPoint(turn,p)):entity.points;
       if(!result.project||!['all',result.size.id].includes($('grade-view').value))return;const color=colors[index%colors.length];
       const legend=node('text',{x:18,y:28+index*18,fill:color,'font-size':12},overlay);legend.textContent=result.size.label+' · '+(result.summary.status==='review'?'需核对':'放码预览');
       for(const entity of result.project.entities){
         if(entity.type==='text'){
-          if(!$('grade-show-text').checked)continue;const p=screen(entity.points[0]),text=node('text',{x:0,y:0,fill:color,'font-size':entity.height*scale,'dominant-baseline':entity.verticalAlign==='middle'?'central':'auto',transform:'translate('+p.x+' '+p.y+') rotate('+-(entity.rotation||0)+') scale(1 '+(entity.mirrorY?-1:1)+')','data-grade-size':result.size.id},overlay);text.textContent=entity.text;if(entity.width){text.setAttribute('textLength',entity.width*scale);text.setAttribute('lengthAdjust','spacingAndGlyphs');}continue;
+          if(!$('grade-show-text').checked)continue;const p=screen(place(entity)[0]),text=node('text',{x:0,y:0,fill:color,'font-size':entity.height*scale,'dominant-baseline':entity.verticalAlign==='middle'?'central':'auto',transform:'translate('+p.x+' '+p.y+') rotate('+-(entity.rotation||0)+') scale(1 '+(entity.mirrorY?-1:1)+')','data-grade-size':result.size.id},overlay);text.textContent=entity.text;if(entity.width){text.setAttribute('textLength',entity.width*scale);text.setAttribute('lengthAdjust','spacingAndGlyphs');}continue;
         }
-        node('path',{d:pathData(entity.points,entity.closed),fill:'none',stroke:color,'stroke-width':1.6,'stroke-dasharray':entity.derivedFrom?'7 3':'none','data-grade-size':result.size.id,'data-grade-entity':entity.id},overlay);
+        node('path',{d:pathData(place(entity),entity.closed),fill:'none',stroke:color,'stroke-width':1.6,'stroke-dasharray':entity.derivedFrom?'7 3':'none','data-grade-size':result.size.id,'data-grade-entity':entity.id},overlay);
         for(const [tip,previous] of [[entity.arrowEnd&&entity.points.at(-1),entity.points.at(-2)],[entity.arrowStart&&entity.points[0],entity.points[1]]])if(tip){const p=screen(tip),q=screen(previous),angle=Math.atan2(p.y-q.y,p.x-q.x);node('path',{d:'M '+(p.x-7*Math.cos(angle-.35))+' '+(p.y-7*Math.sin(angle-.35))+' L '+p.x+' '+p.y+' L '+(p.x-7*Math.cos(angle+.35))+' '+(p.y-7*Math.sin(angle+.35)),stroke:color,fill:'none'},overlay);}
       }
     });
@@ -272,6 +315,39 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
   }
   function pick(point,scale,target){
     if(!draft){notify('先选取基码裁片，再建立放码方案。');return;}
+    if(isTable()&&locking){   // v69: the click locks, unlocks or moves (in one size) the points on a place of the base drawing
+      const project=getProject(),mode=locking;locking='';
+      try{
+        let found=null,closest=10/scale;
+        for(const source of draft.sources){const entity=project.entities.find(item=>item.id===source.entityId);if(!entity||entity.type==='text'||entity.derivedFrom||entity.notchFrom)continue;stationsOf(entity).points.forEach(p=>{const d=Math.hypot(p.x-point.x,p.y-point.y);if(d<closest){closest=d;found={x:p.x,y:p.y};}});}
+        if(!found){refresh();notify('请点在放码方案里一条线的端点或放码点上。');return;}
+        const plan=normalizeGradingPlan(draft),id=lockSizeId(),ids=id?[id]:plan.sizes.map(size=>size.id);
+        if(mode==='lock'){const result=lockPoints(project,plan,found,ids,make(plan));draft=normalizeGradingPlan(result.value);notify('锁定了：这个位置上 '+result.stations.length+' 个点，在'+ids.map(labelOfSize).join('、')+'里。');tableChanged();return;}
+        if(mode==='unlock'){const result=unlockPoints(project,plan,found,ids);if(!result.unlocked){refresh();notify('这个位置的点在'+ids.map(labelOfSize).join('、')+'里没有单独锁定。');return;}draft=normalizeGradingPlan(result.value);notify('解锁了 '+result.unlocked+' 个锁定，下次生成时回到规则给的位置。');tableChanged();return;}
+        const sized=generateGradedSize(project,plan,id).project,station=draft.sources.map(source=>sized.entities.find(item=>item.id===source.entityId)).filter(Boolean).flatMap(entity=>{const base=project.entities.find(item=>item.id===entity.id);if(!base||base.type==='text')return [];return stationsOf(base).points.map((p,i)=>({p,q:stationsOf(entity).points[i]})).filter(item=>item.q&&Math.hypot(item.p.x-found.x,item.p.y-found.y)<.5);})[0];
+        if(!station){refresh();notify('这个点在“'+labelOfSize(id)+'”里找不到。');return;}
+        const to={x:station.q.x+(num('grade-lock-dx')||0),y:station.q.y+(num('grade-lock-dy')||0)},result=moveInSize(project,plan,id,found,to,make(plan));draft=normalizeGradingPlan(result.value);
+        notify('在“'+labelOfSize(id)+'”里移动了：这个位置上 '+result.stations.length+' 个点，经过它的线的另一端 '+result.ends.length+' 个也锁定了，和 ET 一样。');tableChanged();return;
+      }catch(error){refresh();notify(error.message);return;}
+    }
+    if(isTable()&&aligning){   // v68: the click aligns the sizes on a point or a line, or picks the target of 对齐移动点
+      const project=getProject(),keep=$('grade-align-keep').checked,mode=aligning;aligning='';
+      try{
+        if(mode==='point'||mode==='move'){
+          let found=null,closest=10/scale;
+          for(const group of project.groups||[]){if(!(group.contours||[]).length)continue;for(const id of group.entityIds){const entity=project.entities.find(item=>item.id===id);if(!entity||entity.type==='text'||entity.derivedFrom||entity.notchFrom||!draft.sources.some(source=>source.entityId===id))continue;stationsOf(entity).points.forEach(p=>{const d=Math.hypot(p.x-point.x,p.y-point.y);if(d<closest){closest=d;found={entityId:id,at:{x:p.x,y:p.y}};}});}}
+          if(!found){refresh();notify('请点在裁片上一条线的端点或曲线经过的点上。');return;}
+          if(mode==='point'){applyAlign({mode:'point',entityId:found.entityId,at:found.at,axis:$('grade-align-axis').value},keep);return;}
+          const result=alignedMove(project,normalizeGradingPlan(draft),draft.alignment,found.at,{x:num('grade-align-dx')||0,y:num('grade-align-dy')||0},keep);draft=normalizeGradingPlan(result.value);
+          notify('目标点的规则设好了：横向 '+(result.x||'不动')+'，纵向 '+(result.y||'不动')+(result.stations>1?'（这个位置上 '+result.stations+' 个点一起）':'')+'。');tableChanged();return;
+        }
+        const entity=target?.entity;if(!entity||entity.curve||entity.type==='text'||!pieceOfEntity(project,entity.id)){refresh();notify('请点在裁片上的一条直线（或折线上直的一段）上。');return;}
+        // the place on the straight part of the line (or polyline) nearest to the click
+        const pts=entity.points,parts=pts.slice(1).map((b,i)=>[pts[i],b]);if(entity.closed&&pts.length>2)parts.push([pts.at(-1),pts[0]]);let foot=null;
+        for(const [a,b] of parts){const dx=b.x-a.x,dy=b.y-a.y,q=dx*dx+dy*dy,t=q?Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/q)):0,at={x:a.x+t*dx,y:a.y+t*dy},d=Math.hypot(point.x-at.x,point.y-at.y);if(!foot||d<foot.d)foot={at,d};}
+        applyAlign({mode:'line',entityId:entity.id,at:foot.at},keep);return;
+      }catch(error){refresh();notify(error.message);return;}
+    }
     if(isTable()&&addingOnLine){   // ET's 增加放码点: a grading point on the current line, where the click falls on it
       const entity=currentEntity(),path=entity?.points||[];let best=null;
       for(let i=1;i<path.length;i++){const a=path[i-1],b=path[i],dx=b.x-a.x,dy=b.y-a.y,q=dx*dx+dy*dy,t=q?Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/q)):0,at={x:a.x+t*dx,y:a.y+t*dy},distance=Math.hypot(point.x-at.x,point.y-at.y);if(!best||distance<best.distance)best={distance,at};}

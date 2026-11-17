@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>制衣 CAD · 纸样工作台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="line-edit.css"><link rel="stylesheet" href="position.css"><link rel="stylesheet" href="spread.css"><link rel="stylesheet" href="dart.css"><link rel="stylesheet" href="unfold.css"><link rel="stylesheet" href="piece-split.css"><link rel="stylesheet" href="piece-merge.css"><link rel="stylesheet" href="dxf.css"><link rel="stylesheet" href="table.css"><link rel="stylesheet" href="recovery.css"><link rel=stylesheet href=intersection-trim.css><link rel=stylesheet href=endpoint-extend.css><link rel="stylesheet" href="prj-writeback.css"><link rel="stylesheet" href="prj-endpoint.css"><link rel="stylesheet" href="prj-save.css"><link rel="stylesheet" href="prj-line.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>制衣 CAD · 纸样工作台</title><link rel="stylesheet" href="style.css?v=70"><link rel="stylesheet" href="line-edit.css"><link rel="stylesheet" href="position.css"><link rel="stylesheet" href="spread.css"><link rel="stylesheet" href="dart.css"><link rel="stylesheet" href="unfold.css"><link rel="stylesheet" href="piece-split.css"><link rel="stylesheet" href="piece-merge.css"><link rel="stylesheet" href="dxf.css"><link rel="stylesheet" href="table.css"><link rel="stylesheet" href="recovery.css"><link rel=stylesheet href=intersection-trim.css><link rel=stylesheet href=endpoint-extend.css><link rel="stylesheet" href="prj-writeback.css"><link rel="stylesheet" href="prj-endpoint.css"><link rel="stylesheet" href="prj-save.css"><link rel="stylesheet" href="prj-line.css"></head>
 <body>
 <header><div class="brand"><span class="brand-icon">衣</span><div><strong>制衣 CAD</strong><small>PATTERN STUDIO</small></div></div><div class="document"><span class="dot"></span><span id="document-name">未命名纸样</span><span id="dirty"></span></div><div class="file-actions"><button id="new">新建</button><button id="open">打开文件</button><button id="save" class="primary" title="保存全部编辑为 .zycad 工程">保存工程</button><button id="save-prj" aria-haspopup="dialog">保存 PRJ</button><div class="dxf-actions"><button id="export">原生 DXF</button><button id="export-aama" title="只导出裁片，按服装 CAD 之间交换用的 AAMA 格式：裁剪线、净线、刀口、内部线、打孔、布纹线和裁片名称、片数、布料。ET 用“打开DXF文件”可以打开">裁片 DXF</button><button id="dxf-options-button" data-dxf-settings aria-haspopup="dialog" aria-label="DXF 导出设置" title="DXF 导出设置">⌄</button></div></div></header>
 <nav class="command-bar"><div class="command-group"><button id="undo" title="Ctrl+Z">↶ 撤销</button><button id="redo" title="Ctrl+Shift+Z">↷ 重做</button></div><div class="command-group"><button id="fit">适合窗口 <kbd>F</kbd></button><button id="zoom-out">−</button><span id="zoom">100%</span><button id="zoom-in">＋</button></div><label><input type="checkbox" id="whole-group" checked> 整组选取</label><label><input type="checkbox" id="snap" checked> 吸附</label><select id="snap-mode" aria-label="吸附方式" title="9 像素范围内吸附；Alt 临时关闭。交点使用原生有限线条，重合或无法判定时拒绝落点。节点拖动吸附到其他原始线条；垂足/切点用于直线、折线、布纹线、测量的下一点。"><option value="endpoint">端点 / 顶点</option><option value="midpoint">端点＋中点 / 半长点</option><option value="nearest">线条最近点</option><option value="intersection">交点 / 自交点</option><option value="perpendicular" disabled>垂足（从起点）</option><option value="tangent" disabled>切点（从起点）</option><option value="off">不吸附</option></select><label><input type="checkbox" id="grid" checked> 网格</label><label><input type="checkbox" id="show-text" checked> 文字</label><button id="theme" title="切换画布明暗">深色画布</button><button id="recovery-open" aria-haspopup="dialog">本机恢复</button><span class="local-badge">● 文件在浏览器本地处理</span></nav>
@@ -366,6 +366,26 @@
       <div id="grade-table-anchors"></div>
       <button id="grade-table-on-line" title="ET 的“增加放码点”：在线的中间加一个放码点，曲线在这里分段放码">在这条线上加放码点</button>
       <p class="muted">公式写法与 ET 相同，例如“胸围/4+衣长/10”。只写一个数（如“0.5”）表示每差一个码移动这么多厘米。</p>
+      <details id="grade-align-box"><summary>对齐（ET 推板的对齐、线对齐、对齐移动点）</summary>
+        <p id="grade-align-state" class="muted" role="status">各码没有对齐。</p>
+        <label>对齐方向<select id="grade-align-axis"><option value="both">点重合</option><option value="y">只对齐高低（ET 按 Shift）</option><option value="x">只对齐左右（ET 按 Ctrl）</option></select></label>
+        <label class="grade-check"><input id="grade-align-keep" type="checkbox"> 保留：对齐写进外轮廓角点的规则（ET 的“保留”）</label>
+        <div class="pair"><button id="grade-align-point" title="ET 的“对齐”：点一下裁片上的点，各码按它重合">按点对齐</button><button id="grade-align-line" title="ET 的“线对齐”：点一下裁片上一条直线的某个位置，各码的这条线转到基码的方向并对到这里">按线对齐</button></div>
+        <button id="grade-align-clear">取消对齐</button>
+        <div class="pair"><label>每码横向 cm<input id="grade-align-dx" type="number" step="any" value="0"></label><label>每码纵向 cm<input id="grade-align-dy" type="number" step="any" value="0"></label></div>
+        <button id="grade-align-move" title="ET 的“点对齐移动点规则 / 线对齐移动点规则”：按当前的对齐，点同一片上的目标点，它在对齐后的样子里每大一个码移动上面的量">对齐移动点：点目标点</button>
+        <p class="muted">先按点或按线对齐，再用“对齐移动点”给同一片上另一个点设相对它的放码量，例如口袋右上角相对左上角每码放 0.8 cm。勾“保留”时先把对齐写进规则。</p>
+      </details>
+      <details id="grade-lock-box"><summary>锁定（ET 推板的锁定放码点、解锁放码点、锁定解锁当前层）</summary>
+        <p id="grade-lock-state" class="muted" role="status">没有锁定的点。</p>
+        <label>号型<select id="grade-lock-size"><option value="">除基码以外的全部号型</option></select></label>
+        <div class="pair"><button id="grade-lock-point" title="ET 的“锁定放码点”：点一下裁片上的点，它在选的号型里锁定在现在的位置">锁定放码点</button><button id="grade-unlock-point" title="ET 的“解锁放码点”：点一下锁定的点，它在选的号型里回到规则给的位置">解锁放码点</button></div>
+        <button id="grade-lock-size-toggle" title="ET 的“锁定解锁当前层”：选的号型整码保持，或者解锁">锁定这个码</button>
+        <div class="pair"><label>在这个码里横向 mm<input id="grade-lock-dx" type="number" step="any" value="0"></label><label>纵向 mm<input id="grade-lock-dy" type="number" step="any" value="0"></label></div>
+        <button id="grade-lock-move" title="在选的号型里单独移动一个点（ET 推板状态下把这个码设为当前层再用端移动），移动的点和经过它的线的另一端都锁定">在这个码里移动点：点要移动的点</button>
+        <p class="muted">锁定的点以后改规则、改基码都不再动，写进 ET 文件后 ET 推板展开也不动它们。基码的点不能锁（ET 也不锁）；基码要改就直接改图。</p>
+      </details>
+      <label class="grade-check"><input id="grade-single-step" type="checkbox"> 单步展开：改了规则就重新预览（ET 的“单步展开”）</label>
     </div>
     <div id="grade-point-controls">
     <details><summary>目标尺码与档数</summary><div id="grade-sizes"></div><div class="pair"><label>新尺码<input id="grade-new-size" maxlength="50" placeholder="XL"></label><label>相对基码档数<input id="grade-new-step" type="number" step="any" value="2"></label></div><button id="grade-add-size">添加尺码</button><p class="muted">档数只用于“按档差填表”；改变档数不改已输入的 X/Y 位移。新尺码的已设规则先填 0，请逐点确认。</p></details>
@@ -446,6 +466,6 @@
 <div class="pair"><button id="prj-line-cancel">返回编辑</button><button id="prj-line-download" class="primary" disabled>下载新增直线 PRJ 副本</button></div>
 </dialog>
 <input id="file" type="file" accept=".prj,.dxf,.json,.zycad" hidden>
-<script type="module" src="app.js?v=67"></script>
+<script type="module" src="app.js?v=69"></script>
 <script type="module">const a=document.createElement('a');a.href='agent.html';a.target='_blank';a.rel='noopener';a.textContent='ET 本机任务';a.style.cssText='padding:6px 10px;color:#176c7a;white-space:nowrap';document.querySelector('.file-actions').append(a);</script>
 </body></html>

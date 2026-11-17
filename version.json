@@ -1,24 +1,12 @@
 {
-  "version": 67,
-  "base_publication_commit": "5e5ec8272d49563b27216d21a1420879fd56aa99",
+  "version": 70,
+  "base_publication_commit": "73befe9f983b35a6a177699f8992b524e6ec551c",
   "hosting": "GitHub Pages",
   "includes_versions": [
-    53,
-    54,
-    55,
-    56,
-    57,
-    58,
-    59,
-    60,
-    61,
-    62,
-    63,
-    64,
-    65,
-    66
+    68,
+    69
   ],
-  "change": "v67: the corners of ET's 专用角处理 that v65 left. 单边直角: the seam line of one edge runs on past the corner and turns square to that edge to the other seam line (at a smooth joint: the step moved along). 曲线断差1, 2, 3: where two edges in line differ in seam width, the wider seam line runs on and a straight line or a curve leads to the narrower one (2 from the joint). 反转翻角: a turned-up cuff at both ends of the hem (A + B the hem's width, B over A, as ET requires). 开叉半止口 and 开叉全止口: the vent's seam line becomes a dashed fold with one or two layers of facing outside, the seam line above curves into the fold, the hem's seam line runs out to the facing. ET's sizes A to D. ET's own step where the seam width changes at a smooth joint (the wider part of a vent was lost on convex pieces before). Panel tool, commands and sentences of the assistant; ET files written and read with ET's records, lines, dashed folds and notches.",
-  "validation": "Node tests (70 scripts and 7 other suites), 33 real-browser suites with 1839 checks. ET 2017 used its 专用角处理 on six probe drawings; the runs of the seventeen files it saved are repeated with the commands: on straight edges within 0.02 mm for 单边直角, 曲线断差1, 反转翻角 and the vents, 0.05 mm for 曲线断差3 and 0.55 mm for 曲线断差2 (a curve ET keeps only as samples, fitted to seventeen of them); the ET file the page writes has ET's records and ET's notches. The file saved in the browser page and eight files the page wrote were opened, saved and rebuilt by ET: kept exactly, and rebuilt from the page's records within 0.02 mm (曲线断差2 0.11 mm). The comparisons of v56 to v66 with ET were made again with this code.",
-  "limits": "On a curved vent edge ET's facing bends in a way not worked out: the page lays it along the vent's chord (7 to 10 mm off). Where the square line of 单边直角 meets the other seam line far off, ET's dialog draws it as the page does, but ET's own rebuild drops it (its own file too). The curved hem fold-back of v65 stays about 5 mm off ET. Only 14 of 114 instructions were put to a model again for v67; the others rest on the answers of v60 to v66, replayed with the final code. The model was not called through the service with a key."
+  "change": "v70: a new look made with the design system of the ui-ux-pro-max skill (Minimalism & Swiss Style, dense): navy primary, blue for what is selected and the current tool, green accent, slate greys; the drawing sheet and its grid follow, the dark canvas is as before. No text under 12 px; every text colour pair at least 4.5:1, control borders and the focus ring at least 3:1; visible keyboard focus; hover feedback; no transitions when the system asks for reduced motion; a compact header on narrower windows; one family of line icons for the 27 tools. Only the stylesheets changed (and the version of style.css in index.html); scripts, markup and ids are those of v69. Carries v69 (ET's locks of grading mode. 锁定放码点: a point kept where it stands in the sizes it is locked in (every size but the base when none is named; never the base, as in ET); 解锁放码点; 锁定解锁当前层: a size kept whole; a point moved in one size (ET's 端移动 with that size as the current layer), which locks the ends of the lines it changed, as ET does. Panel controls, four commands and sentences of the assistant. ET's lock marks are read, and a plan with locks writes every size's layer into the ET file with ET's marks. Fixed: a size layer of an ET file that ET had expanded with locked points was read as part of the layer before it.) and v68 (ET's alignment tools of grading mode: 对齐, 线对齐, 保留, 点对齐移动点规则, 线对齐移动点规则, 单步展开; rules ET wrote in inches and files saved while one size was shown alone are read).",
+  "validation": "Node tests (72 scripts and 7 other suites) and 35 real-browser suites with 1885 checks, as for v69, run on v70; the colour pairs computed (lowest 4.84:1; text rules under 4.5:1: 40 of 145 before, 0 of 160 now); pictures of the panels and dialogs before and after. Carried from v69: Node tests (72 scripts and 7 other suites), 35 real-browser suites with 1885 checks. ET 2017 used its own lock tools on the probe of v68 and saved twelve files; the page reads ET's locks and makes the sizes ET expanded, and its own tools doing ET's steps give the same: within 0.0001 mm. Four files the page wrote with every size's layer and the file saved in the browser page were opened, expanded and saved by ET: every size within 0.0001 mm, every lock kept. The comparisons of v56 to v68 with ET were made again with this code.",
+  "limits": "The Google fonts the design system proposes are not used (the page works offline and they have no Chinese glyphs); no dark theme for the whole page yet. Carried from v69: ET's 基础号型推板展开 (a command of a hidden menu) changed nothing in three tries and is not done; the other kinds of ET rules (proportional and constrained points) are not done. A plan with a grading point on a line writes no size layers when it has locks. With 保留 ET also writes rules on the two ends of the grain line; the page's grain line does not move with the sizes. Only 14 of 129 instructions were put to a model for v69 (ten of them again after the words were changed); the others rest on the answers of v60 to v68, replayed with the final code. The model was not called through the service with a key."
 }

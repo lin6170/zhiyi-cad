@@ -32,7 +32,7 @@ function alongPath(points, q) {
 export function carryEtGrading({ parsed, project, made, curves, tails, makeId, notchOfNode = new Map() }) {
   const sizes = parsed.metadata.sizeSystem;
   const report = { inFile: { readable: Boolean(sizes?.readable), series: '', sizes: [], tableRows: 0, rules: 0, followers: 0, otherKinds: 0, onNotches: 0, layers: (parsed.metadata.sizeLayers || []).length || 1 },
-    carried: false, planId: null, planName: '', seriesUsed: '', seriesChanged: false, sizes: [], sizeOrder: [], baseSize: '', tableRows: 0, rules: 0, followers: 0, onLines: 0, dividingPoints: 0, notchRules: 0, notchRulesNotCarried: 0, notCarried: 0, reasons: [], unknownNames: [] };
+    carried: false, planId: null, planName: '', seriesUsed: '', seriesChanged: false, sizes: [], sizeOrder: [], baseSize: '', tableRows: 0, rules: 0, followers: 0, onLines: 0, dividingPoints: 0, notchRules: 0, notchRulesNotCarried: 0, notCarried: 0, locks: 0, lockedSizes: [], locksNotCarried: 0, reasons: [], unknownNames: [] };
   if (!sizes || !sizes.readable) { if (sizes?.problem) report.reasons.push(sizes.problem); return report; }
   const nodes = parsed.metadata.nodes || [], moved = sizes.rules.filter(rule => rule.kind === 2), following = sizes.rules.filter(rule => rule.kind === 10);
   Object.assign(report.inFile, { series: sizes.series[sizes.activeSeries]?.name || '', sizes: sizes.names.map(size => size.name), tableRows: sizes.table.length, rules: moved.filter(rule => !rule.onNotch).length, followers: following.length,
@@ -53,18 +53,18 @@ export function carryEtGrading({ parsed, project, made, curves, tails, makeId, n
       // the notch on the net edge carries the rule into the drawing; its twin on the seam line (no notch of the drawing) is not counted
       const notchId = notchOfNode.get(rule.pointNumber); if (!notchId) continue;
       if (rule.kind !== 2 || check(rule) || notchSeen.has(notchId)) { report.notchRulesNotCarried++; continue; }
-      notchSeen.add(notchId); notchRules.push({ notchId, x: rule.x, y: rule.y, axisX: [...rule.axisX], axisY: [...rule.axisY] }); continue;
+      notchSeen.add(notchId); notchRules.push({ notchId, x: rule.x, y: rule.y, axisX: [...rule.axisX], axisY: [...rule.axisY], ...(rule.inches ? { unit: 'in' } : {}) }); continue;
     }
     const source = rule.kind === 10 ? byNumber.get(rule.master) : rule;
     if (rule.kind !== 2 && rule.kind !== 10) { report.notCarried++; fail('有 ' + rule.kind + ' 类的规则还不认识'); continue; }
     if (!source || source.kind !== 2) { report.notCarried++; fail('有跟随点找不到它跟随的点'); continue; }
     const problem = check(source); if (problem) { report.notCarried++; fail(problem); continue; }
     if (rule.node === null || rule.node === undefined) { report.notCarried++; fail('有规则所在的点没有对上点记录'); continue; }
-    usable.set(rule.node, { x: source.x, y: source.y, axisX: [...source.axisX], axisY: [...source.axisY], follower: rule.kind === 10 });
+    usable.set(rule.node, { x: source.x, y: source.y, axisX: [...source.axisX], axisY: [...source.axisY], follower: rule.kind === 10, inches: !!source.inches });   // v68: a rule ET made in inches keeps that
   }
 
   // ---- every line and curve of the drawing with the points the file lists on it
-  const anchors = [], seen = new Set(), placed = new Set();
+  const anchors = [], seen = new Set(), placed = new Set(), stationOfNode = new Map();   // v69: node number -> the stations it stands on (for the locks)
   for (const e of curves) {
     const entity = made.get(e.id); if (!entity) continue;
     const stations = stationsOf(entity), last = stations.points.length - 1;
@@ -72,7 +72,7 @@ export function carryEtGrading({ parsed, project, made, curves, tails, makeId, n
       const node = nodes[number - 1]; if (!node) continue; const at = { x: node.x * MM, y: node.y * MM };
       let index = -1, nearest = ON_STATION_MM; stations.points.forEach((p, i) => { const d = Math.hypot(p.x - at.x, p.y - at.y); if (d <= nearest) { nearest = d; index = i; } });
       const rule = usable.get(number - 1); let where = null;
-      if (index >= 0) where = { index };
+      if (index >= 0) { where = { index }; stationOfNode.set(number, [...(stationOfNode.get(number) || []), { entityId: entity.id, index, at: stations.points[index], stations: stations.points.length }]); }
       else {
         // not one of the points the curve was drawn through: a grading point on the line (ET's 线上的放码点), between two of them
         const along = alongPath(entity.points, at);
@@ -80,7 +80,7 @@ export function carryEtGrading({ parsed, project, made, curves, tails, makeId, n
       }
       if (!where) { if (rule) { report.notCarried++; fail('有规则所在的点不在它的线上'); placed.add(number - 1); } continue; }
       const key = entity.id + '#' + JSON.stringify(where) + (rule && where.between !== undefined ? '|' + rule.x + '|' + rule.y : ''); if (rule) placed.add(number - 1); if (seen.has(key)) continue;
-      if (rule) { seen.add(key); anchors.push({ entityId: entity.id, ...where, x: rule.x, y: rule.y, axisX: rule.axisX, axisY: rule.axisY }); if (rule.follower) report.followers++; else report.rules++; if (where.between !== undefined) report.onLines++; }
+      if (rule) { seen.add(key); anchors.push({ entityId: entity.id, ...where, x: rule.x, y: rule.y, axisX: rule.axisX, axisY: rule.axisY, ...(rule.inches ? { unit: 'in' } : {}) }); if (rule.follower) report.followers++; else report.rules++; if (where.between !== undefined) report.onLines++; }
       else if (where.between !== undefined || (where.index !== 0 && where.index !== last)) { seen.add(key); anchors.push({ entityId: entity.id, ...where, plain: true }); report.dividingPoints++; }
     }
   }
@@ -99,9 +99,20 @@ export function carryEtGrading({ parsed, project, made, curves, tails, makeId, n
     sizes: targets.map(size => ({ id: makeId(), label: size.name, step: size.slot - sizes.baseSlot, slot: size.slot })),
     sizeTable: { unit: 'cm', activeSeries: sizes.series.indexOf(series), baseSlot: sizes.baseSlot, series: sizes.series.map(list => list.sizes.map(size => ({ slot: size.slot, name: size.name }))), rows: sizes.table.map(row => ({ name: row.name, values: [...row.values] })) },
     anchors, notchRules };
+  // v69: the locks of every size (ET's 锁定放码点), and the sizes ET keeps whole (锁定解锁当前层: every point of the layer where it stands)
+  const locks = [], lockedSizes = [];
+  for (const layer of sizes.layers || []) {
+    const size = value.sizes.find(item => item.label === layer.name); if (!size || layer.base) continue;
+    if (layer.lockProblem) { report.locksNotCarried++; fail('有一个码的锁定没有读懂（' + layer.lockProblem + '）'); continue; }
+    const lockAt = (points, whole) => { for (const point of points || []) { const stations = stationOfNode.get(point.pointNumber); if (!stations) { if (!whole) { report.locksNotCarried++; fail('有锁定的点不在带入的线上'); } continue; }
+      for (const station of stations) if (!locks.some(lock => lock.entityId === station.entityId && lock.index === station.index && lock.sizeId === size.id && Boolean(lock.layer) === whole)) locks.push({ entityId: station.entityId, index: station.index, at: { x: station.at.x, y: station.at.y }, stations: station.stations, sizeId: size.id, x: point.x * MM, y: point.y * MM, ...(whole ? { layer: true } : {}) }); } };
+    lockAt(layer.lockedPoints, false);
+    if (layer.locked) { lockAt(layer.allPoints, true); lockedSizes.push(size.id); }
+  }
+  if (locks.length) value.locks = locks; if (lockedSizes.length) value.lockedSizes = lockedSizes;
   let plan; try { plan = normalizeGradingPlan(value); } catch (error) { fail('放码方案没有建成：' + error.message); report.rules = 0; report.followers = 0; report.dividingPoints = 0; return report; }
   const id = makeId(); (project.gradingPlans ||= []).push({ id, ...plan }); project.version = Math.max(project.version, 8);
-  Object.assign(report, { carried: true, notchRules: plan.notchRules.length, planId: id, planName: plan.name, seriesUsed: series.name, sizes: plan.sizes.map(size => size.label), baseSize: plan.baseSize, tableRows: plan.sizeTable.rows.length,
+  Object.assign(report, { carried: true, locks: (plan.locks || []).filter(lock => !lock.layer).length, lockedSizes: (plan.lockedSizes || []).map(sizeId => plan.sizes.find(size => size.id === sizeId).label), notchRules: plan.notchRules.length, planId: id, planName: plan.name, seriesUsed: series.name, sizes: plan.sizes.map(size => size.label), baseSize: plan.baseSize, tableRows: plan.sizeTable.rows.length,
     sizeOrder: [{ label: plan.baseSize, slot: plan.sizeTable.baseSlot }, ...plan.sizes].sort((a, b) => a.slot - b.slot).map(size => size.label) });
   return report;
 }

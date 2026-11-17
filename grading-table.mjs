@@ -24,10 +24,22 @@ import { fitClampedSpline, nativeFitPoints } from './fit-spline.mjs';
 import { refreshCurve } from './curves.mjs';
 
 export const TABLE_UNIT_MM = 10;          // the size table and the formulas are in centimetres
+export const INCH_CM = 2.54;              // v68: rules ET made while it worked in inches (bit 0 of their flag byte)
 const THIN_MM = 1;                        // points of a graded curve closer than this are thinned, as ET does
 export const FOLLOW_TOLERANCE_MM = .05;   // ET made followers of points up to 0.03 mm from the point they follow
+export const ALIGN_AXES = ['both', 'x', 'y'];   // the alignment of the sizes (v68, grading-align.mjs): x only the left-right place (ET: Ctrl), y only the height (ET: Shift)
 const SLOTS = 50, SERIES = 5, OPERATORS = '+-*/()';
 const finite = v => typeof v === 'number' && Number.isFinite(v);
+
+/** The alignment a plan keeps for its view of the sizes (v68, grading-align.mjs): ET's 对齐 on a point of a piece, or 线对齐 on a
+ * straight line of a piece at a place. Null when there is none. */
+export function normalizeAlignment(alignment, sourceIds) {
+  if (alignment === undefined || alignment === null) return null;
+  if (typeof alignment !== 'object' || !['point', 'line'].includes(alignment.mode) || typeof alignment.entityId !== 'string' || !sourceIds.has(alignment.entityId)) throw new Error('放码方案的对齐设置无效');
+  const at = alignment.at; if (!at || !finite(at.x) || !finite(at.y) || Math.abs(at.x) > 1e8 || Math.abs(at.y) > 1e8) throw new Error('放码方案的对齐位置无效');
+  const axis = alignment.mode === 'point' ? (alignment.axis || 'both') : 'both'; if (!ALIGN_AXES.includes(axis)) throw new Error('放码方案的对齐方向无效');
+  return { mode: alignment.mode, entityId: alignment.entityId, at: { x: at.x, y: at.y }, axis };
+}
 
 /** The stations of a line or curve: where an anchor can sit. Null for what cannot be graded this way (a text). */
 export function stationsOf(entity) {
@@ -69,7 +81,7 @@ export function normalizeTablePlan(value, sources, sizes) {
     if (!onLine && anchor.at && finite(anchor.at.x) && finite(anchor.at.y) && Math.abs(anchor.at.x) <= 1e8 && Math.abs(anchor.at.y) <= 1e8) where.at = { x: anchor.at.x, y: anchor.at.y };
     if (Number.isInteger(anchor.stations) && anchor.stations >= 2 && anchor.stations <= 100001) where.stations = anchor.stations;
     if (anchor.plain === true) return { entityId: anchor.entityId, ...where, plain: true };
-    const out = { entityId: anchor.entityId, ...where, x: String(anchor.x ?? '').trim(), y: String(anchor.y ?? '').trim() };
+    const out = { entityId: anchor.entityId, ...where, x: String(anchor.x ?? '').trim(), y: String(anchor.y ?? '').trim(), ...(anchor.unit === 'in' ? { unit: 'in' } : {}) };
     for (const key of ['x', 'y']) { if (out[key].length > 300) throw new Error('公式太长'); let tree; try { tree = parseFormula(out[key]); } catch (error) { throw new Error('公式“' + out[key] + '”读不懂：' + error.message); } for (const name of formulaNames(tree)) if (!names.has(name)) throw new Error('公式“' + out[key] + '”用到了尺寸表里没有的“' + name + '”'); }
     for (const key of ['axisX', 'axisY']) { const axis = anchor[key]; if (!Array.isArray(axis) || axis.length !== 2 || !axis.every(finite) || Math.hypot(axis[0], axis[1]) > 1.001 || Math.hypot(axis[0], axis[1]) < .999) throw new Error('放码方向无效'); out[key] = [axis[0], axis[1]]; }
     return out;
@@ -78,7 +90,7 @@ export function normalizeTablePlan(value, sources, sizes) {
   if (value.notchRules !== undefined && (!Array.isArray(value.notchRules) || value.notchRules.length > 5000)) throw new Error('刀口的放码规则无效');
   const notchSeen = new Set(), notchRules = (value.notchRules || []).map(rule => {
     if (!rule || typeof rule.notchId !== 'string' || !rule.notchId || rule.notchId.length > 200 || notchSeen.has(rule.notchId)) throw new Error('刀口的放码规则无效'); notchSeen.add(rule.notchId);
-    const out = { notchId: rule.notchId, x: String(rule.x ?? '').trim(), y: String(rule.y ?? '').trim() };
+    const out = { notchId: rule.notchId, x: String(rule.x ?? '').trim(), y: String(rule.y ?? '').trim(), ...(rule.unit === 'in' ? { unit: 'in' } : {}) };
     for (const key of ['x', 'y']) { if (out[key].length > 300) throw new Error('公式太长'); let tree; try { tree = parseFormula(out[key]); } catch (error) { throw new Error('公式“' + out[key] + '”读不懂：' + error.message); } for (const name of formulaNames(tree)) if (!names.has(name)) throw new Error('公式“' + out[key] + '”用到了尺寸表里没有的“' + name + '”'); }
     for (const key of ['axisX', 'axisY']) { const axis = rule[key]; if (!Array.isArray(axis) || axis.length !== 2 || !axis.every(finite) || Math.hypot(axis[0], axis[1]) > 1.001 || Math.hypot(axis[0], axis[1]) < .999) throw new Error('放码方向无效'); out[key] = [axis[0], axis[1]]; }
     return out;
@@ -87,7 +99,22 @@ export function normalizeTablePlan(value, sources, sizes) {
   const active = series[t.activeSeries], named = (slot, name) => { const entry = active.find(item => item.slot === slot); if (entry) entry.name = name; else active.push({ slot, name }); };
   named(t.baseSlot, String(value.baseSize || '').trim().slice(0, 50)); for (const size of sizes) named(size.slot, size.label); active.sort((a, b) => a.slot - b.slot);
   const lostRules = Number.isInteger(value.lostRules) && value.lostRules > 0 && value.lostRules < 1e6 ? value.lostRules : 0;
-  return { sizeTable: { unit: 'cm', activeSeries: t.activeSeries, baseSlot: t.baseSlot, series, rows }, anchors, notchRules, lostRules };
+  const alignment = normalizeAlignment(value.alignment, new Set(sources.filter(source => source.kind !== 'text').map(source => source.entityId)));
+  // v69: points locked in one size (ET's 锁定放码点), and sizes kept as they are (ET's 锁定解锁当前层; their stations are locked with layer)
+  const sizeIds = new Set(sizes.map(size => size.id)), lines = new Set(sources.filter(source => source.kind !== 'text').map(source => source.entityId)), lockSeen = new Set();
+  if (value.locks !== undefined && (!Array.isArray(value.locks) || value.locks.length > 200000)) throw new Error('锁定的点无效');
+  const locks = (value.locks || []).map(lock => {
+    if (!lock || !lines.has(lock.entityId) || !Number.isInteger(lock.index) || lock.index < 0 || lock.index > 100000 || !sizeIds.has(lock.sizeId) || !finite(lock.x) || !finite(lock.y) || Math.abs(lock.x) > 1e8 || Math.abs(lock.y) > 1e8) throw new Error('锁定的点无效');
+    const key = lock.entityId + '#' + lock.index + '@' + lock.sizeId + (lock.layer ? '|layer' : ''); if (lockSeen.has(key)) throw new Error('锁定的点重复'); lockSeen.add(key);
+    const out = { entityId: lock.entityId, index: lock.index, sizeId: lock.sizeId, x: lock.x, y: lock.y };
+    if (lock.at && finite(lock.at.x) && finite(lock.at.y) && Math.abs(lock.at.x) <= 1e8 && Math.abs(lock.at.y) <= 1e8) out.at = { x: lock.at.x, y: lock.at.y };
+    if (Number.isInteger(lock.stations) && lock.stations >= 1 && lock.stations <= 100001) out.stations = lock.stations;
+    if (lock.layer === true) out.layer = true;
+    return out;
+  });
+  if (value.lockedSizes !== undefined && (!Array.isArray(value.lockedSizes) || value.lockedSizes.some(id => !sizeIds.has(id)))) throw new Error('整码锁定的号型无效');
+  const lockedSizes = [...new Set(value.lockedSizes || [])], lostLocks = Number.isInteger(value.lostLocks) && value.lostLocks > 0 && value.lostLocks < 1e6 ? value.lostLocks : 0;
+  return { sizeTable: { unit: 'cm', activeSeries: t.activeSeries, baseSlot: t.baseSlot, series, rows }, anchors, notchRules, lostRules, ...(alignment ? { alignment } : {}), ...(locks.length ? { locks } : {}), ...(lockedSizes.length ? { lockedSizes } : {}), ...(lostLocks ? { lostLocks } : {}) };
 }
 
 /** Where a place lies on a line or curve: on one of its stations ({ index }), on it between two stations ({ between }), or not on it (null). */
@@ -104,7 +131,8 @@ export function placeOnLine(entity, at, tolerance = FOLLOW_TOLERANCE_MM) {
 /** How far a rule moves its point in one size, in millimetres, along the axes of the rule. */
 export function ruleDisplacement(plan, size, rule) {
   const rows = new Map(plan.sizeTable.rows.map(row => [row.name, row.values])), slot = size.slot, base = plan.sizeTable.baseSlot, difference = name => rows.has(name) ? rows.get(name)[slot] - rows.get(name)[base] : NaN;
-  const moved = text => { if (!text) return 0; const tree = parseFormula(text); return formulaNames(tree).size ? evaluateFormula(tree, difference) : evaluateFormula(tree, () => NaN) * (slot - base); };
+  const k = rule.unit === 'in' ? INCH_CM : 1;   // v68: a rule ET made in inches
+  const moved = text => { if (!text) return 0; const tree = parseFormula(text); return formulaNames(tree).size ? evaluateFormula(tree, name => difference(name) / k) * k : evaluateFormula(tree, () => NaN) * (slot - base) * k; };
   const dx = moved(rule.x) * TABLE_UNIT_MM, dy = moved(rule.y) * TABLE_UNIT_MM; return { dx: dx * rule.axisX[0] + dy * rule.axisY[0], dy: dx * rule.axisX[1] + dy * rule.axisY[1] };
 }
 
@@ -127,7 +155,9 @@ export function tableDisplacements(entities, plan, size) {
   // as written ("胸围/4+0.5" adds half a centimetre in every size). A formula of numbers only is a step: it counts once for
   // every size the size is away from the base size ("1" is one centimetre per size). This is what ET 2017 did with a probe file.
   const difference = name => rows.has(name) ? rows.get(name)[slot] - rows.get(name)[base] : NaN, trees = new Map();
-  const moved = text => { if (!text) return 0; if (!trees.has(text)) { const tree = parseFormula(text); trees.set(text, { tree, step: !formulaNames(tree).size }); } const { tree, step } = trees.get(text); return step ? evaluateFormula(tree, () => NaN) * (slot - base) : evaluateFormula(tree, difference); };
+  // v68: a rule ET made while it worked in inches (unit 'in') is worked out in inches: every name stands for its difference in inches,
+  // the numbers as written, and the result is turned back into centimetres ("胸围/4+1" is a quarter of the chest plus one inch)
+  const moved = (text, inches = false) => { if (!text) return 0; if (!trees.has(text)) { const tree = parseFormula(text); trees.set(text, { tree, step: !formulaNames(tree).size }); } const { tree, step } = trees.get(text), k = inches ? INCH_CM : 1; return step ? evaluateFormula(tree, () => NaN) * (slot - base) * k : evaluateFormula(tree, name => difference(name) / k) * k; };
   const sources = new Set(plan.sources.map(source => source.entityId)), lines = new Map();
   for (const entity of entities) { if (!sources.has(entity.id)) continue; const stations = stationsOf(entity); if (stations) lines.set(entity.id, { entity, stations, marks: new Map() }); }
   const masters = [];
@@ -140,7 +170,7 @@ export function tableDisplacements(entities, plan, size) {
       while (line.marks.has(key)) key -= 1e-6;   // on the same place as an earlier one: ET puts the later one first along the line
     } else { if (anchor.index >= points.length) throw new Error('放码点的序号超出“' + line.entity.name + '”的点数，请重新建立方案'); key = anchor.index; place = points[anchor.index]; }
     if (anchor.plain) { line.marks.set(key, { key, base: place, dx: 0, dy: 0, plain: true }); continue; }
-    const dx = moved(anchor.x) * TABLE_UNIT_MM, dy = moved(anchor.y) * TABLE_UNIT_MM, mark = { key, listed, base: place, dx: dx * anchor.axisX[0] + dy * anchor.axisY[0], dy: dx * anchor.axisX[1] + dy * anchor.axisY[1] };
+    const dx = moved(anchor.x, anchor.unit === 'in') * TABLE_UNIT_MM, dy = moved(anchor.y, anchor.unit === 'in') * TABLE_UNIT_MM, mark = { key, listed, base: place, dx: dx * anchor.axisX[0] + dy * anchor.axisY[0], dy: dx * anchor.axisX[1] + dy * anchor.axisY[1] };
     line.marks.set(key, mark); masters.push(mark);
   }
   // an end, or a plain mark, that lies on a point with a rule moves with it
@@ -153,6 +183,12 @@ export function tableDisplacements(entities, plan, size) {
       const place = present ? present.base : points[key], master = follow(place);
       if (master) { line.marks.set(key, { key, base: place, dx: master.dx, dy: master.dy, follows: true }); followers++; } else if (!present) line.marks.set(key, { key, base: place, dx: 0, dy: 0, plain: true });
     }
+  }
+  // v69: a point locked in this size keeps its place there whatever its rule says (ET's 锁定放码点; a size kept whole has every
+  // station locked), as ET's 推板展开 leaves a locked point where it is
+  for (const lock of plan.locks || []) {
+    if (lock.sizeId !== size.id) continue; const line = lines.get(lock.entityId); if (!line || lock.index >= line.stations.points.length) continue;
+    const base = line.stations.points[lock.index]; line.marks.set(lock.index, { key: lock.index, base, dx: lock.x - base.x, dy: lock.y - base.y, locked: true });
   }
   return { lines, followers };
 }

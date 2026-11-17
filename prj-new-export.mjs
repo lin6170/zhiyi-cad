@@ -21,6 +21,7 @@ import { SMOOTH_JOINT_COS } from './variable-offset.mjs';
 import { MATERIAL_CODES, attributesOf } from './piece-attributes.mjs';
 export { MATERIAL_CODES };
 import { generateNotches } from './notches.mjs';
+import { generateGradedSize } from './grading.mjs';
 
 export const NEW_PRJ_FORMAT = 'ET PRJ 2.0 / 08';
 export const NEW_PRJ_NATIVE_VERIFIED = true;
@@ -89,12 +90,14 @@ const IDENTITY_TRANSFORM = (() => {
 const MATERIAL_GROUPS = [['面料'], ['里'], ['衬', '棉'], ['实样']];
 
 /** Serialize an explicit model. Every identity and coordinate comes from the model. */
+// the line of sizes in the header: the names of the layers in the file and how many (ET: "S M L XL 总数: 4")
+const sizeCount = model => { const names = [{ slot: 9, name: model.header.sizeName }, ...(model.layers || [])].sort((a, b) => a.slot - b.slot).map(item => item.name); return names.join(' ') + ' 总数: ' + names.length; };
 export function encodeNewPrj(model) {
   const w = new Writer(), h = model.header, size = h.sizeName;
   // File header and the document information block of ET's own default document.
   w.bytes([0x51, 0x7f, 1, 1]).f32(2).u32(0).string('PD').string('').string('');
   w.u32(DOCUMENT_CLASS).u32(1).u32(2).u32(0).u8(0).u32(h.id).bytes(WHITE).u8(1).u32(0).zero(12);
-  w.string(h.collection).string(h.style).string(h.note).string(h.savedAt).string(size).string('').string(size + ' 总数: 1').u8(0);
+  w.string(h.collection).string(h.style).string(h.note).string(h.savedAt).string(size).string('').string(sizeCount(model)).u8(0);
   for (const group of MATERIAL_GROUPS) for (let i = 0; i < 10; i++) w.string(group[i] || '');
   // The sizes (see prj-sizes.mjs): the series in use, five series of fifty names (position 9 is the base size), the size table.
   const grading = h.grading;
@@ -102,74 +105,79 @@ export function encodeNewPrj(model) {
   for (let series = 0; series < 5; series++) for (let slot = 0; slot < 50; slot++) w.string(grading ? grading.names[series][slot] || '' : slot === 9 ? [size, '38'][series] || '' : '');
   w.u32(1).u32(grading ? grading.rows.length : 0);
   for (const row of grading ? grading.rows : []) { w.string(row.name); for (const value of row.values) w.f32(value); }
-  w.zero(5).u32(9).u32(9).u32(DOCUMENT_CLASS).zero(36);
-  // One size.
-  w.u32(1).u32(1).u32(model.root.id).u32(0).bytes(WHITE).f32(1).u32(0).u8(1).string(size).u32(9);
-  w.u32(model.nodes.length + model.notches.length + (model.points || []).length + (model.gradePoints || []).length);
-  // A point with a grading rule: 0x40 in its first flag byte, kind 2 after its owner, then the two formulas and the two axes.
-  const rule = r => { w.u32(0).u8(0).string(r.x).string(r.y).u32(0).u32(0).u32(0).u8(0).f32(r.axisX[0]).f32(r.axisX[1]).f32(0).f32(r.axisY[0]).f32(r.axisY[1]).f32(0).u32(0); };
-  for (const node of model.nodes) { w.u32(6).u32(node.id).bytes([0, 0, 255, node.rule ? 0x40 : 0, 0, 0]).point(node).u32(node.owner).u32(node.rule ? 2 : 0); if (node.rule) rule(node.rule); }
-  // A notch is a node of type 7: after the common part, how it is placed (0 by distance, 1 where the referenced line meets the edge),
-  // the distance from one end of its curve, 1, the curve, which end, its role (0 on the net edge, 2 for the twin on the seam line),
-  // the direction it points and the tangent of the curve there.
-  for (const notch of model.notches) {   // a notch that moves by a rule of its own carries the rule before its notch data
-    w.u32(7).u32(notch.id).bytes([0, 0, 255, notch.rule ? 0x40 : 0, 0, 0]).point(notch).u32(notch.reference).u32(notch.rule ? 2 : 0); if (notch.rule) rule(notch.rule);
-    w.u8(notch.mode).f32(notch.distance).u32(1).u32(notch.owner).u8(notch.end).u32(notch.role).point(notch.direction).point(notch.tangent);
-    if (notch.angle) w.f32(notch.angle); else w.u32(0);   // v67: ET's notches at the folds of 反转翻角 keep an angle (degrees) there
-  }
-  // After the notches: the drill holes (flag byte 5) and the two ends of every row's base line (flag byte 7). No line owns them.
-  for (const p of model.points || []) w.u32(6).u32(p.id).bytes([0, 0, 255, 0, 0, p.flag]).point(p).u32(0).u32(0);
-  // Last: grading points that are not an end of their line: a point a curve passes through, or a point on the line (third flag byte 6).
-  for (const p of model.gradePoints || []) { w.u32(6).u32(p.id).bytes([0, 0, 255, p.rule ? 0x40 : 0, 0, p.onLine ? 6 : 0]).point(p).u32(p.owner).u32(p.rule ? 2 : 0); if (p.rule) rule(p.rule); }
-  w.u32(model.curves.length);
-  model.curves.forEach((curve, index) => {
-    w.u32(curve.id).bytes(curve.base).bytes(curve.flags);
-    if (curve.kind === 2) w.u32(2).u32(0).u32(0).bytes(curve.color).f32(1).u32(curve.style).u8(0).point(curve.points[0]).point(curve.points[1]);
-    else {
-      w.u32(4).u32(0).bytes(curve.base2 || curve.base).u8(0).u32(0).u32(0).bytes(curve.color).f32(1).u32(curve.style);   // v66: ET draws a curve in its second base colour
-      w.u32(curve.points.length); for (const p of curve.points) w.point(p);
-      w.u32(curve.controls.length); for (const p of curve.controls) w.point(p);
-      w.u32(0); // ET rebuilds its display table when the file is opened.
+  w.zero(5).u32(9).u32(9).u32(DOCUMENT_CLASS);
+  // Fifty size positions, each empty (0) or a layer (1): the base size at position 9; v69: the other sizes of a plan with locks at theirs.
+  const base = { slot: 9, flag: 1, name: size, root: model.root, nodes: model.nodes, notches: model.notches, points: model.points, gradePoints: model.gradePoints, curves: model.curves, pieces: model.pieces, texts: model.texts, rows: model.rows, corners: model.corners };
+  const layers = [base, ...(model.layers || [])];
+  for (let slot = 0; slot < 50; slot++) { const layer = layers.find(item => item.slot === slot); if (layer) writeLayer(layer); else w.u32(0); }
+  function writeLayer(L) {
+  w.u32(1).u32(1).u32(L.root.id).u32(0).bytes(WHITE).f32(1).u32(0).u8(L.flag).string(L.name).u32(9);
+    w.u32(L.nodes.length + L.notches.length + (L.points || []).length + (L.gradePoints || []).length);
+    // A point with a grading rule: 0x40 in its first flag byte, kind 2 after its owner, then the two formulas and the two axes.
+    const rule = r => { w.u32(0).u8(0).string(r.x).string(r.y).u32(0).u32(0).u32(0).u8(0).f32(r.axisX[0]).f32(r.axisX[1]).f32(0).f32(r.axisY[0]).f32(r.axisY[1]).f32(0).u32(0); };
+    const ruled = (r, locked) => (r ? (r.inches ? 0x41 : 0x40) : 0) | (locked ? 8 : 0);   // v68: bit 0 marks a rule whose numbers are inches (made in ET while it worked in inches); v69: bit 3 a point locked in this size
+    for (const node of L.nodes) { w.u32(6).u32(node.id).bytes([0, 0, 255, ruled(node.rule, node.locked), 0, 0]).point(node).u32(node.owner).u32(node.rule ? 2 : 0); if (node.rule) rule(node.rule); }
+    // A notch is a node of type 7: after the common part, how it is placed (0 by distance, 1 where the referenced line meets the edge),
+    // the distance from one end of its curve, 1, the curve, which end, its role (0 on the net edge, 2 for the twin on the seam line),
+    // the direction it points and the tangent of the curve there.
+    for (const notch of L.notches) {   // a notch that moves by a rule of its own carries the rule before its notch data
+      w.u32(7).u32(notch.id).bytes([0, 0, 255, ruled(notch.rule, notch.locked), 0, 0]).point(notch).u32(notch.reference).u32(notch.rule ? 2 : 0); if (notch.rule) rule(notch.rule);
+      w.u8(notch.mode).f32(notch.distance).u32(1).u32(notch.owner).u8(notch.end).u32(notch.role).point(notch.direction).point(notch.tangent);
+      if (notch.angle) w.f32(notch.angle); else w.u32(0);   // v67: ET's notches at the folds of 反转翻角 keep an angle (degrees) there
     }
-    w.list([index * 2 + 1, index * 2 + 2, ...(curve.gradePoints || [])]).list(curve.secondary || []).list(curve.links).f32(curve.width).u32(0).u32(curve.attribute || 0).u16(0);
-  });
-  w.u32(model.pieces.length);
-  model.pieces.forEach((piece, index) => {
-    w.u32(piece.id).bytes(WHITE).u8(0x20).zero(13).u32(1).u32(piece.id2).bytes(WHITE).u32(piece.id2);
-    w.string(h.style).string(piece.name).string(size).string(piece.material).u32(piece.materialCode).string(piece.symmetric ? '对称' : '不对称');
-    w.u32(piece.count).u32(piece.symmetric ? piece.count : 0).f32(piece.angle).u32(0).string(piece.label).u32(piece.mode);
-    w.point(piece.center).point(piece.end1).u32(0).point(piece.center).point(piece.end2).u32(0).u16(0);
-    w.u32(1).u8(0).u8(0).list(piece.chain).u32(index + 1);
-    w.list(piece.ownedCurves).list([...piece.ownedCurves.flatMap(curve => [curve * 2 - 1, curve * 2]), ...(piece.points || [])]).list(piece.corners).list(piece.texts).list(piece.rows || []);
-    w.bytes(IDENTITY_TRANSFORM);
-  });
-  w.u32(model.texts.length);
-  for (const text of model.texts) {
-    w.u32(text.id).u32(0).bytes(WHITE).f32(1).u32(0).u8(0).u32(1).u8(0).u32(1);
-    w.f32(text.x).f32(text.y).f32(text.cos).f32(text.sin).f32(text.width).f32(text.height).u32(0).string(text.text).f32(text.x2).f32(text.y2).zero(6);
+    // After the notches: the drill holes (flag byte 5) and the two ends of every row's base line (flag byte 7). No line owns them.
+    for (const p of L.points || []) w.u32(6).u32(p.id).bytes([0, 0, 255, 0, 0, p.flag]).point(p).u32(0).u32(0);
+    // Last: grading points that are not an end of their line: a point a curve passes through, or a point on the line (third flag byte 6).
+    for (const p of L.gradePoints || []) { w.u32(6).u32(p.id).bytes([0, 0, 255, ruled(p.rule, p.locked), 0, p.onLine ? 6 : 0]).point(p).u32(p.owner).u32(p.rule ? 2 : 0); if (p.rule) rule(p.rule); }
+    w.u32(L.curves.length);
+    L.curves.forEach((curve, index) => {
+      w.u32(curve.id).bytes(curve.base).bytes(curve.flags);
+      if (curve.kind === 2) w.u32(2).u32(0).u32(0).bytes(curve.color).f32(1).u32(curve.style).u8(0).point(curve.points[0]).point(curve.points[1]);
+      else {
+        w.u32(4).u32(0).bytes(curve.base2 || curve.base).u8(0).u32(0).u32(0).bytes(curve.color).f32(1).u32(curve.style);   // v66: ET draws a curve in its second base colour
+        w.u32(curve.points.length); for (const p of curve.points) w.point(p);
+        w.u32(curve.controls.length); for (const p of curve.controls) w.point(p);
+        w.u32(0); // ET rebuilds its display table when the file is opened.
+      }
+      w.list([index * 2 + 1, index * 2 + 2, ...(curve.gradePoints || [])]).list(curve.secondary || []).list(curve.links).f32(curve.width).u32(0).u32(curve.attribute || 0).u16(0);
+    });
+    w.u32(L.pieces.length);
+    L.pieces.forEach((piece, index) => {
+      w.u32(piece.id).bytes(WHITE).u8(0x20).zero(13).u32(1).u32(piece.id2).bytes(WHITE).u32(piece.id2);
+      w.string(h.style).string(piece.name).string(L.name).string(piece.material).u32(piece.materialCode).string(piece.symmetric ? '对称' : '不对称');
+      w.u32(piece.count).u32(piece.symmetric ? piece.count : 0).f32(piece.angle).u32(0).string(piece.label).u32(piece.mode);
+      w.point(piece.center).point(piece.end1).u32(0).point(piece.center).point(piece.end2).u32(0).u16(0);
+      w.u32(1).u8(0).u8(0).list(piece.chain).u32(index + 1);
+      w.list(piece.ownedCurves).list([...piece.ownedCurves.flatMap(curve => [curve * 2 - 1, curve * 2]), ...(piece.points || [])]).list(piece.corners).list(piece.texts).list(piece.rows || []);
+      w.bytes(IDENTITY_TRANSFORM);
+    });
+    w.u32(L.texts.length);
+    for (const text of L.texts) {
+      w.u32(text.id).u32(0).bytes(WHITE).f32(1).u32(0).u8(0).u32(1).u8(0).u32(1);
+      w.f32(text.x).f32(text.y).f32(text.cos).f32(text.sin).f32(text.width).f32(text.height).u32(0).string(text.text).f32(text.x2).f32(text.y2).zero(6);
+    }
+    // Rows of buttons (kind 0) and buttonholes (kind 1), as ET's own tools write them: the number of marks, their radius, how far a
+    // buttonhole reaches past its row, the base line as a curve through two points (ET rebuilds its display table), every mark
+    // with its distance, share and curve parameter along the base line, and the numbers of the two point records at its ends.
+    w.u32((L.rows || []).length);
+    for (const row of L.rows || []) {
+      const [a, b] = row.baseLine;
+      w.u32(row.id).bytes(WHITE).bytes([0, row.kind, 0]).u8(1).u32(row.items.length).f32(row.radius).f32(row.offset).u32(0).u8(0);
+      w.bytes(WHITE).u8(0).u32(0).u32(0).bytes(WHITE).f32(1).u32(1).u32(2).point(a).point(b).u32(4).point(a).point(a).point(b).point(b).u32(0);
+      w.u32(row.items.length); for (const item of row.items) w.point(item).f32(item.along).f32(item.share).f32(item.parameter);
+      w.u32(row.ends[0]).u32(row.ends[1]);
+    }
+    w.u32(0).u32(L.corners.length);
+    // One record per contour corner. A cut (6) or stepped (8) corner replaces the plain record and carries two sizes;
+    // a fold-back (1) is an extra record of the folded edge that names its treated ends (0 and 1, or -1 for an end left plain).
+    // v65: the other treatments replace the plain record of their corner too; 可调反转 (15) names its ends like the fold-back and carries
+    // its shift and a zero, 七字角 (7) and 反转直角 (10) two zero floats, the types from 16 on six zero floats and four -1, as ET writes them.
+    for (const corner of L.corners) {
+      w.u32(0).bytes(WHITE).u8(corner.type || 0).u32(corner.curve).u32(corner.end >>> 0).u32(corner.other || 0).u32((corner.otherEnd ?? -1) >>> 0);
+      if (CORNER_SIZES.includes(corner.type)) w.f32(corner.sizes[0]).f32(corner.sizes[1]);
+      else if (CORNER_TAILS.includes(corner.type)) { for (let i = 0; i < 6; i++) w.f32(corner.tail ? corner.tail[i] : 0); for (let i = 0; i < 4; i++) w.u32(0xffffffff); }   // v67: 开叉 keeps [0, 0, A, B, C, D] there
+    }
   }
-  // Rows of buttons (kind 0) and buttonholes (kind 1), as ET's own tools write them: the number of marks, their radius, how far a
-  // buttonhole reaches past its row, the base line as a curve through two points (ET rebuilds its display table), every mark
-  // with its distance, share and curve parameter along the base line, and the numbers of the two point records at its ends.
-  w.u32((model.rows || []).length);
-  for (const row of model.rows || []) {
-    const [a, b] = row.baseLine;
-    w.u32(row.id).bytes(WHITE).bytes([0, row.kind, 0]).u8(1).u32(row.items.length).f32(row.radius).f32(row.offset).u32(0).u8(0);
-    w.bytes(WHITE).u8(0).u32(0).u32(0).bytes(WHITE).f32(1).u32(1).u32(2).point(a).point(b).u32(4).point(a).point(a).point(b).point(b).u32(0);
-    w.u32(row.items.length); for (const item of row.items) w.point(item).f32(item.along).f32(item.share).f32(item.parameter);
-    w.u32(row.ends[0]).u32(row.ends[1]);
-  }
-  w.u32(0).u32(model.corners.length);
-  // One record per contour corner. A cut (6) or stepped (8) corner replaces the plain record and carries two sizes;
-  // a fold-back (1) is an extra record of the folded edge that names its treated ends (0 and 1, or -1 for an end left plain).
-  // v65: the other treatments replace the plain record of their corner too; 可调反转 (15) names its ends like the fold-back and carries
-  // its shift and a zero, 七字角 (7) and 反转直角 (10) two zero floats, the types from 16 on six zero floats and four -1, as ET writes them.
-  for (const corner of model.corners) {
-    w.u32(0).bytes(WHITE).u8(corner.type || 0).u32(corner.curve).u32(corner.end >>> 0).u32(corner.other || 0).u32((corner.otherEnd ?? -1) >>> 0);
-    if (CORNER_SIZES.includes(corner.type)) w.f32(corner.sizes[0]).f32(corner.sizes[1]);
-    else if (CORNER_TAILS.includes(corner.type)) { for (let i = 0; i < 6; i++) w.f32(corner.tail ? corner.tail[i] : 0); for (let i = 0; i < 4; i++) w.u32(0xffffffff); }   // v67: 开叉 keeps [0, 0, A, B, C, D] there
-  }
-  w.zero(160);
   const bytes = w.done();
   if (bytes.length > 16 * 1024 * 1024) throw new Error('生成的 PRJ 超过 16 MB。');
   return bytes;
@@ -215,7 +223,7 @@ export function readNewPrj(input) {
   expect(DOCUMENT_CLASS, u32(), '文档类别'); expect(1, u32(), '文档信息'); expect(2, u32(), '文档信息'); expect(0, u32(), '文档信息'); expect(0, u8(), '文档信息');
   header.id = u32(); white('文档'); expect(1, u8(), '文档信息'); expect(0, u32(), '文档信息'); zeros(12, '文档信息');
   header.collection = string(); header.style = string(); header.note = string(); header.savedAt = string(); header.sizeName = string();
-  literal('', '文档信息'); literal(header.sizeName + ' 总数: 1', '尺码计数'); expect(0, u8(), '文档信息');
+  literal('', '文档信息'); const countLine = string(); expect(0, u8(), '文档信息');
   for (const group of MATERIAL_GROUPS) for (let i = 0; i < 10; i++) literal(group[i] || '', '布料表');
   // the sizes: the series in use, five series of fifty names, the size table
   const activeSeries = u32(); if (activeSeries > 4) fail('号型系列不符');
@@ -226,104 +234,114 @@ export function readNewPrj(input) {
   // a file without grading names its one size, and "38" beside it, and nothing else
   const plain = activeSeries === 0 && !tableRowCount && names.every((list, series) => list.every((name, slot) => name === (slot === 9 ? [header.sizeName, '38'][series] || '' : '')));
   if (!plain) header.grading = { activeSeries, names, rows: tableRows };
-  zeros(5, '尺寸表'); expect(9, u32(), '尺寸表'); expect(9, u32(), '尺寸表'); expect(DOCUMENT_CLASS, u32(), '文档类别'); zeros(36, '尺码前缀');
-  expect(1, u32(), '尺码'); expect(1, u32(), '尺码');
-  const root = { id: u32() }; expect(0, u32(), '尺码'); white('尺码'); expect(1, f32(), '尺码'); expect(0, u32(), '尺码'); expect(1, u8(), '尺码'); literal(header.sizeName, '尺码名'); expect(9, u32(), '尺码');
-  const nodeCount = u32(); if (nodeCount > 200000) fail('节点数量异常');
-  const declaredCurves = declaredCurveCount(bytes, o, nodeCount);
-  const nodes = [], notches = [], points = [], gradePoints = [];
-  for (let i = 0; i < nodeCount; i++) {
-    const type = u32(); if (type !== 6 && type !== 7) fail('节点类型不受支持');
-    const id = u32(); expect(0, u8(), '节点'); expect(0, u8(), '节点'); expect(255, u8(), '节点'); const ruled = u8(); expect(0, u8(), '节点标志'); const flag = u8();
-    const p = point(), owner = u32(), kind = u32(); let rule = null;
-    if (ruled !== 0 && ruled !== 0x40) fail('节点标志不符');
-    if (ruled) {   // a grading rule: two formulas and the two axes they act along
-      if (kind !== 2) fail('放码规则记录不符'); expect(0, u32(), '放码规则'); expect(0, u8(), '放码规则');
-      rule = { x: string(), y: string() }; zeros(13, '放码规则'); rule.axisX = [f32(), f32()]; expect(0, f32(), '放码方向'); rule.axisY = [f32(), f32()]; expect(0, f32(), '放码方向'); expect(0, u32(), '放码规则');
-    } else if (kind !== 0) fail('节点记录不符');
-    if (type === 6 && owner === 0) {   // a drill hole (5) or an end of a row's base line (7): after the end points and the notches, owned by no line
-      if ((flag !== 5 && flag !== 7) || rule || gradePoints.length) fail('点记录不符'); points.push({ id, x: p.x, y: p.y, flag }); continue;
+  zeros(5, '尺寸表'); expect(9, u32(), '尺寸表'); expect(9, u32(), '尺寸表'); expect(DOCUMENT_CLASS, u32(), '文档类别');
+  // v69: fifty size positions, each empty (0) or a layer (1); the base size at position 9
+  const layers = [];
+  for (let slot = 0; slot < 50; slot++) { if (o + 4 > bytes.length) fail('文件尾长度不符'); const present = u32(); if (present === 0) continue; if (present !== 1) fail('尺码位置不符'); layers.push({ slot, ...readLayer() }); }
+  if (o !== bytes.length) fail('文件尾长度不符');
+  const baseLayer = layers.find(layer => layer.flag & 1);
+  if (!baseLayer || baseLayer.slot !== 9 || layers.filter(layer => layer.flag & 1).length !== 1 || baseLayer.flag !== 1 || baseLayer.name !== header.sizeName) fail('基码图层不符');
+  if (countLine !== layers.map(layer => layer.name).join(' ') + ' 总数: ' + layers.length) fail('尺码计数不符');
+  const { slot: _slot, flag: _flag, name: _name, ...base } = baseLayer, others = layers.filter(layer => layer !== baseLayer);
+  return { header, ...base, ...(others.length ? { layers: others } : {}) };
+  function readLayer() {
+    expect(1, u32(), '尺码');
+    const root = { id: u32() }; expect(0, u32(), '尺码'); white('尺码'); expect(1, f32(), '尺码'); expect(0, u32(), '尺码'); const flag = u8(); if (flag & 0xf4) fail('图层标志不符'); const sizeName = string(); expect(9, u32(), '尺码');
+    const nodeCount = u32(); if (nodeCount > 200000) fail('节点数量异常');
+    const declaredCurves = declaredCurveCount(bytes, o, nodeCount);
+    const nodes = [], notches = [], points = [], gradePoints = [];
+    for (let i = 0; i < nodeCount; i++) {
+      const type = u32(); if (type !== 6 && type !== 7) fail('节点类型不受支持');
+      const id = u32(); expect(0, u8(), '节点'); expect(0, u8(), '节点'); expect(255, u8(), '节点'); const ruledByte = u8(), locked = (ruledByte & 8) === 8, ruled = ruledByte & ~8; expect(0, u8(), '节点标志'); const flag = u8();   // v69: bit 3 a point locked in this size
+      const p = point(), owner = u32(), kind = u32(); let rule = null;
+      if (ruled !== 0 && ruled !== 0x40 && ruled !== 0x41) fail('节点标志不符');
+      if (ruled) {   // a grading rule: two formulas and the two axes they act along
+        if (kind !== 2) fail('放码规则记录不符'); expect(0, u32(), '放码规则'); expect(0, u8(), '放码规则');
+        rule = { x: string(), y: string(), ...(ruled === 0x41 ? { inches: true } : {}) }; zeros(13, '放码规则'); rule.axisX = [f32(), f32()]; expect(0, f32(), '放码方向'); rule.axisY = [f32(), f32()]; expect(0, f32(), '放码方向'); expect(0, u32(), '放码规则');
+      } else if (kind !== 0) fail('节点记录不符');
+      if (type === 6 && owner === 0) {   // a drill hole (5) or an end of a row's base line (7): after the end points and the notches, owned by no line
+        if ((flag !== 5 && flag !== 7) || rule || locked || gradePoints.length) fail('点记录不符'); points.push({ id, x: p.x, y: p.y, flag }); continue;
+      }
+      if (type === 6 && (flag || notches.length || points.length || gradePoints.length || nodes.length >= declaredCurves * 2)) {   // a grading point inside its line: after everything else
+        if (flag !== 0 && flag !== 6) fail('放码点记录不符'); gradePoints.push({ id, x: p.x, y: p.y, owner, onLine: flag === 6, ...(rule ? { rule } : {}), ...(locked ? { locked: true } : {}) }); continue;
+      }
+      if (flag || points.length || gradePoints.length) fail('节点标志或顺序不符');
+      if (type === 6) { nodes.push({ id, x: p.x, y: p.y, owner, ...(rule ? { rule } : {}), ...(locked ? { locked: true } : {}) }); continue; }
+      const notch = { id, x: p.x, y: p.y, reference: owner, ...(rule ? { rule } : {}), ...(locked ? { locked: true } : {}), mode: u8(), distance: f32() }; expect(1, u32(), '刀口'); notch.owner = u32(); notch.end = u8(); notch.role = u32();
+      notch.direction = point(); notch.tangent = point(); { const angle = f32(); if (angle) notch.angle = angle; }
+      if (notch.mode > 1 || notch.end > 1 || ![0, 2].includes(notch.role)) fail('刀口记录不符');
+      notches.push(notch);
     }
-    if (type === 6 && (flag || notches.length || points.length || gradePoints.length || nodes.length >= declaredCurves * 2)) {   // a grading point inside its line: after everything else
-      if (flag !== 0 && flag !== 6) fail('放码点记录不符'); gradePoints.push({ id, x: p.x, y: p.y, owner, onLine: flag === 6, ...(rule ? { rule } : {}) }); continue;
+    const curveCount = u32(); if (curveCount * 2 !== nodes.length) fail('节点与线条数量不一致');
+    const curves = [];
+    for (let i = 0; i < curveCount; i++) {
+      const curve = { id: u32(), base: rgb(), flags: [u8(), u8(), u8()], kind: u32() }; expect(0, u32(), '线条');
+      if (curve.kind === 2) { expect(0, u32(), '直线'); curve.color = rgb(); expect(1, f32(), '直线'); curve.style = u32(); expect(0, u8(), '直线'); curve.points = [point(), point()]; }
+      else if (curve.kind === 4) {
+        // the second base colour is the one ET draws a curve in; v66: the extended seam has 7fcccc there, every other curve its first base colour
+        const again = rgb(); if (again.some((v, k) => v !== curve.base[k])) { if (again.join() !== '127,204,204') fail('曲线底色不一致'); curve.base2 = again; } expect(0, u8(), '曲线'); expect(0, u32(), '曲线'); expect(0, u32(), '曲线');
+        curve.color = rgb(); expect(1, f32(), '曲线'); curve.style = u32();
+        const n = u32(); if (n < 2 || n > 1000) fail('曲线点数异常'); curve.points = Array.from({ length: n }, point);
+        expect(n + 2, u32(), '曲线控制点数'); curve.controls = Array.from({ length: n + 2 }, point); expect(0, u32(), '曲线显示表');
+      } else fail('线条类型不受支持');
+      const direct = list(); if (direct.length < 2 || direct[0] !== i * 2 + 1 || direct[1] !== i * 2 + 2) fail('线条节点引用不符');
+      const firstGradePoint = curveCount * 2 + notches.length + points.length, inside = direct.slice(2);
+      if (inside.some(n => !(n > firstGradePoint && n <= nodeCount) || gradePoints[n - firstGradePoint - 1].owner !== i + 1)) fail('线条放码点引用不符'); if (inside.length) curve.gradePoints = inside;
+      const secondary = list(); if (secondary.some(n => !(n > curveCount * 2 && n <= nodeCount) || notches[n - curveCount * 2 - 1].owner !== i + 1)) fail('线条附加节点引用不符'); if (secondary.length) curve.secondary = secondary;
+      curve.links = list(); curve.width = f32(); expect(0, u32(), '线条'); curve.attribute = u32(); expect(0, u16(), '线条');
+      curves.push(curve);
     }
-    if (flag || points.length || gradePoints.length) fail('节点标志或顺序不符');
-    if (type === 6) { nodes.push({ id, x: p.x, y: p.y, owner, ...(rule ? { rule } : {}) }); continue; }
-    const notch = { id, x: p.x, y: p.y, reference: owner, ...(rule ? { rule } : {}), mode: u8(), distance: f32() }; expect(1, u32(), '刀口'); notch.owner = u32(); notch.end = u8(); notch.role = u32();
-    notch.direction = point(); notch.tangent = point(); { const angle = f32(); if (angle) notch.angle = angle; }
-    if (notch.mode > 1 || notch.end > 1 || ![0, 2].includes(notch.role)) fail('刀口记录不符');
-    notches.push(notch);
+    const pieceCount = u32(); if (pieceCount > 10000) fail('裁片数量异常');
+    const pieces = [];
+    for (let i = 0; i < pieceCount; i++) {
+      const piece = { id: u32() }; white('裁片'); expect(0x20, u8(), '裁片'); zeros(13, '裁片'); expect(1, u32(), '裁片'); piece.id2 = u32(); white('裁片'); expect(piece.id2, u32(), '裁片');
+      literal(header.style, '裁片款式'); piece.name = string(); literal(sizeName, '裁片号型'); piece.material = string(); piece.materialCode = u32(); if (!piece.material || piece.materialCode > 100000) fail('裁片布料不符');
+      const symmetry = string(); if (!['对称', '不对称'].includes(symmetry)) fail('裁片对称属性不符'); piece.symmetric = symmetry === '对称';
+      piece.count = u32(); if (piece.count < 1 || piece.count > 999) fail('裁片片数异常'); expect(piece.symmetric ? piece.count : 0, u32(), '裁片对称'); piece.angle = f32(); if (!Number.isFinite(piece.angle)) fail('裁片角度异常'); expect(0, u32(), '裁片'); piece.label = string(); if (!piece.label.startsWith('MD')) fail('裁片标签不符'); piece.mode = u32();
+      piece.center = point(); piece.end1 = point(); expect(0, u32(), '布纹'); const again = point(); if (again.x !== piece.center.x || again.y !== piece.center.y) fail('布纹中心不一致'); piece.end2 = point(); expect(0, u32(), '布纹'); expect(0, u16(), '裁片');
+      expect(1, u32(), '轮廓数量'); expect(0, u8(), '轮廓'); expect(0, u8(), '轮廓'); piece.chain = list(); expect(i + 1, u32(), '轮廓归属');
+      piece.ownedCurves = list(); const ownedNodes = list();
+      const lineEnds = nodes.length + notches.length; piece.points = ownedNodes.filter(n => n > lineEnds);
+      if (canonical(ownedNodes.filter(n => n <= lineEnds)) !== canonical(piece.ownedCurves.flatMap(curve => [curve * 2 - 1, curve * 2])) || piece.points.some(n => n > lineEnds + points.length)) fail('裁片节点引用不符');
+      piece.corners = list(); piece.texts = list(); piece.rows = list();
+      need(112); for (let k = 0; k < 112; k++) if (bytes[o + k] !== IDENTITY_TRANSFORM[k]) fail('裁片变换不符'); o += 112;
+      pieces.push(piece);
+    }
+    const textCount = u32(); if (textCount > 10000) fail('文字数量异常');
+    const texts = [];
+    for (let i = 0; i < textCount; i++) {
+      const text = { id: u32() }; expect(0, u32(), '文字'); white('文字'); expect(1, f32(), '文字'); expect(0, u32(), '文字'); expect(0, u8(), '文字'); expect(1, u32(), '文字'); expect(0, u8(), '文字'); expect(1, u32(), '文字');
+      text.x = f32(); text.y = f32(); text.cos = f32(); text.sin = f32(); text.width = f32(); text.height = f32(); expect(0, u32(), '文字'); text.text = string(); text.x2 = f32(); text.y2 = f32(); zeros(6, '文字');
+      texts.push(text);
+    }
+    const rowCount = u32(); if (rowCount > 10000) fail('扣位数量异常');
+    const rows = [], samePoint = (a, b) => a.x === b.x && a.y === b.y;
+    for (let i = 0; i < rowCount; i++) {
+      const row = { id: u32() }; white('扣位'); expect(0, u8(), '扣位'); row.kind = u8(); if (row.kind > 1) fail('扣位种类不符'); expect(0, u8(), '扣位'); expect(1, u8(), '扣位');
+      const count = u32(); row.radius = f32(); row.offset = f32(); if (!(row.radius > 0) || !(row.offset >= 0) || (row.kind === 0 && row.offset !== 0)) fail('扣位尺寸不符'); expect(0, u32(), '扣位'); expect(0, u8(), '扣位');
+      white('扣位基线'); expect(0, u8(), '扣位基线'); expect(0, u32(), '扣位基线'); expect(0, u32(), '扣位基线'); white('扣位基线'); expect(1, f32(), '扣位基线'); expect(1, u32(), '扣位基线'); expect(2, u32(), '扣位基线');
+      row.baseLine = [point(), point()]; expect(4, u32(), '扣位基线'); const controls = [point(), point(), point(), point()];
+      if (!samePoint(controls[0], row.baseLine[0]) || !samePoint(controls[1], row.baseLine[0]) || !samePoint(controls[2], row.baseLine[1]) || !samePoint(controls[3], row.baseLine[1])) fail('扣位基线不符'); expect(0, u32(), '扣位基线');
+      expect(count, u32(), '扣位个数'); if (count < 1 || count > 1000) fail('扣位个数异常');
+      row.items = Array.from({ length: count }, () => ({ ...point(), along: f32(), share: f32(), parameter: f32() })); row.ends = [u32(), u32()];
+      for (const end of row.ends) { const found = points[end - nodes.length - notches.length - 1]; if (!found || found.flag !== 7) fail('扣位基线端点不符'); }
+      rows.push(row);
+    }
+    for (const piece of pieces) if (piece.rows.some(n => n < 1 || n > rows.length)) fail('裁片扣位引用不符');
+    expect(0, u32(), '附加对象');
+    const cornerCount = u32(); if (cornerCount > 100000) fail('转角数量异常');
+    const corners = [];
+    for (let i = 0; i < cornerCount; i++) {
+      expect(0, u32(), '转角'); white('转角'); const type = u8(); if (!CORNER_TYPES.includes(type)) fail('转角类型 ' + type + ' 不受支持');
+      const corner = { curve: u32(), end: u32() | 0, other: u32(), otherEnd: u32() | 0 };
+      if (type) corner.type = type; else { if (corner.other !== 0 || corner.otherEnd !== -1) fail('转角记录不符'); delete corner.other; delete corner.otherEnd; }
+      if (CORNER_SIZES.includes(type)) corner.sizes = [f32(), f32()];
+      else if (CORNER_TAILS.includes(type)) { const tail = [f32(), f32(), f32(), f32(), f32(), f32()]; if (type > 17 && tail.some(x => x !== 0)) fail('转角尾不为零'); if (tail.some(x => x !== 0)) corner.tail = tail; for (let k = 0; k < 4; k++) expect(0xffffffff, u32(), '转角尾'); }   // v67: 开叉 keeps [0, 0, A, B, C, D]
+      corners.push(corner);
+    }
+    if (gradePoints.some((point, index) => !curves[point.owner - 1] || !(curves[point.owner - 1].gradePoints || []).includes(curves.length * 2 + notches.length + points.length + index + 1))) fail('放码点没有被它的线引用');
+    return { flag, name: sizeName, root, nodes, notches, points, gradePoints, curves, pieces, texts, rows, corners };
   }
-  const curveCount = u32(); if (curveCount * 2 !== nodes.length) fail('节点与线条数量不一致');
-  const curves = [];
-  for (let i = 0; i < curveCount; i++) {
-    const curve = { id: u32(), base: rgb(), flags: [u8(), u8(), u8()], kind: u32() }; expect(0, u32(), '线条');
-    if (curve.kind === 2) { expect(0, u32(), '直线'); curve.color = rgb(); expect(1, f32(), '直线'); curve.style = u32(); expect(0, u8(), '直线'); curve.points = [point(), point()]; }
-    else if (curve.kind === 4) {
-      // the second base colour is the one ET draws a curve in; v66: the extended seam has 7fcccc there, every other curve its first base colour
-      const again = rgb(); if (again.some((v, k) => v !== curve.base[k])) { if (again.join() !== '127,204,204') fail('曲线底色不一致'); curve.base2 = again; } expect(0, u8(), '曲线'); expect(0, u32(), '曲线'); expect(0, u32(), '曲线');
-      curve.color = rgb(); expect(1, f32(), '曲线'); curve.style = u32();
-      const n = u32(); if (n < 2 || n > 1000) fail('曲线点数异常'); curve.points = Array.from({ length: n }, point);
-      expect(n + 2, u32(), '曲线控制点数'); curve.controls = Array.from({ length: n + 2 }, point); expect(0, u32(), '曲线显示表');
-    } else fail('线条类型不受支持');
-    const direct = list(); if (direct.length < 2 || direct[0] !== i * 2 + 1 || direct[1] !== i * 2 + 2) fail('线条节点引用不符');
-    const firstGradePoint = curveCount * 2 + notches.length + points.length, inside = direct.slice(2);
-    if (inside.some(n => !(n > firstGradePoint && n <= nodeCount) || gradePoints[n - firstGradePoint - 1].owner !== i + 1)) fail('线条放码点引用不符'); if (inside.length) curve.gradePoints = inside;
-    const secondary = list(); if (secondary.some(n => !(n > curveCount * 2 && n <= nodeCount) || notches[n - curveCount * 2 - 1].owner !== i + 1)) fail('线条附加节点引用不符'); if (secondary.length) curve.secondary = secondary;
-    curve.links = list(); curve.width = f32(); expect(0, u32(), '线条'); curve.attribute = u32(); expect(0, u16(), '线条');
-    curves.push(curve);
-  }
-  const pieceCount = u32(); if (pieceCount > 10000) fail('裁片数量异常');
-  const pieces = [];
-  for (let i = 0; i < pieceCount; i++) {
-    const piece = { id: u32() }; white('裁片'); expect(0x20, u8(), '裁片'); zeros(13, '裁片'); expect(1, u32(), '裁片'); piece.id2 = u32(); white('裁片'); expect(piece.id2, u32(), '裁片');
-    literal(header.style, '裁片款式'); piece.name = string(); literal(header.sizeName, '裁片号型'); piece.material = string(); piece.materialCode = u32(); if (!piece.material || piece.materialCode > 100000) fail('裁片布料不符');
-    const symmetry = string(); if (!['对称', '不对称'].includes(symmetry)) fail('裁片对称属性不符'); piece.symmetric = symmetry === '对称';
-    piece.count = u32(); if (piece.count < 1 || piece.count > 999) fail('裁片片数异常'); expect(piece.symmetric ? piece.count : 0, u32(), '裁片对称'); piece.angle = f32(); if (!Number.isFinite(piece.angle)) fail('裁片角度异常'); expect(0, u32(), '裁片'); piece.label = string(); if (!piece.label.startsWith('MD')) fail('裁片标签不符'); piece.mode = u32();
-    piece.center = point(); piece.end1 = point(); expect(0, u32(), '布纹'); const again = point(); if (again.x !== piece.center.x || again.y !== piece.center.y) fail('布纹中心不一致'); piece.end2 = point(); expect(0, u32(), '布纹'); expect(0, u16(), '裁片');
-    expect(1, u32(), '轮廓数量'); expect(0, u8(), '轮廓'); expect(0, u8(), '轮廓'); piece.chain = list(); expect(i + 1, u32(), '轮廓归属');
-    piece.ownedCurves = list(); const ownedNodes = list();
-    const lineEnds = nodes.length + notches.length; piece.points = ownedNodes.filter(n => n > lineEnds);
-    if (canonical(ownedNodes.filter(n => n <= lineEnds)) !== canonical(piece.ownedCurves.flatMap(curve => [curve * 2 - 1, curve * 2])) || piece.points.some(n => n > lineEnds + points.length)) fail('裁片节点引用不符');
-    piece.corners = list(); piece.texts = list(); piece.rows = list();
-    need(112); for (let k = 0; k < 112; k++) if (bytes[o + k] !== IDENTITY_TRANSFORM[k]) fail('裁片变换不符'); o += 112;
-    pieces.push(piece);
-  }
-  const textCount = u32(); if (textCount > 10000) fail('文字数量异常');
-  const texts = [];
-  for (let i = 0; i < textCount; i++) {
-    const text = { id: u32() }; expect(0, u32(), '文字'); white('文字'); expect(1, f32(), '文字'); expect(0, u32(), '文字'); expect(0, u8(), '文字'); expect(1, u32(), '文字'); expect(0, u8(), '文字'); expect(1, u32(), '文字');
-    text.x = f32(); text.y = f32(); text.cos = f32(); text.sin = f32(); text.width = f32(); text.height = f32(); expect(0, u32(), '文字'); text.text = string(); text.x2 = f32(); text.y2 = f32(); zeros(6, '文字');
-    texts.push(text);
-  }
-  const rowCount = u32(); if (rowCount > 10000) fail('扣位数量异常');
-  const rows = [], samePoint = (a, b) => a.x === b.x && a.y === b.y;
-  for (let i = 0; i < rowCount; i++) {
-    const row = { id: u32() }; white('扣位'); expect(0, u8(), '扣位'); row.kind = u8(); if (row.kind > 1) fail('扣位种类不符'); expect(0, u8(), '扣位'); expect(1, u8(), '扣位');
-    const count = u32(); row.radius = f32(); row.offset = f32(); if (!(row.radius > 0) || !(row.offset >= 0) || (row.kind === 0 && row.offset !== 0)) fail('扣位尺寸不符'); expect(0, u32(), '扣位'); expect(0, u8(), '扣位');
-    white('扣位基线'); expect(0, u8(), '扣位基线'); expect(0, u32(), '扣位基线'); expect(0, u32(), '扣位基线'); white('扣位基线'); expect(1, f32(), '扣位基线'); expect(1, u32(), '扣位基线'); expect(2, u32(), '扣位基线');
-    row.baseLine = [point(), point()]; expect(4, u32(), '扣位基线'); const controls = [point(), point(), point(), point()];
-    if (!samePoint(controls[0], row.baseLine[0]) || !samePoint(controls[1], row.baseLine[0]) || !samePoint(controls[2], row.baseLine[1]) || !samePoint(controls[3], row.baseLine[1])) fail('扣位基线不符'); expect(0, u32(), '扣位基线');
-    expect(count, u32(), '扣位个数'); if (count < 1 || count > 1000) fail('扣位个数异常');
-    row.items = Array.from({ length: count }, () => ({ ...point(), along: f32(), share: f32(), parameter: f32() })); row.ends = [u32(), u32()];
-    for (const end of row.ends) { const found = points[end - nodes.length - notches.length - 1]; if (!found || found.flag !== 7) fail('扣位基线端点不符'); }
-    rows.push(row);
-  }
-  for (const piece of pieces) if (piece.rows.some(n => n < 1 || n > rows.length)) fail('裁片扣位引用不符');
-  expect(0, u32(), '附加对象');
-  const cornerCount = u32(); if (cornerCount > 100000) fail('转角数量异常');
-  const corners = [];
-  for (let i = 0; i < cornerCount; i++) {
-    expect(0, u32(), '转角'); white('转角'); const type = u8(); if (!CORNER_TYPES.includes(type)) fail('转角类型 ' + type + ' 不受支持');
-    const corner = { curve: u32(), end: u32() | 0, other: u32(), otherEnd: u32() | 0 };
-    if (type) corner.type = type; else { if (corner.other !== 0 || corner.otherEnd !== -1) fail('转角记录不符'); delete corner.other; delete corner.otherEnd; }
-    if (CORNER_SIZES.includes(type)) corner.sizes = [f32(), f32()];
-    else if (CORNER_TAILS.includes(type)) { const tail = [f32(), f32(), f32(), f32(), f32(), f32()]; if (type > 17 && tail.some(x => x !== 0)) fail('转角尾不为零'); if (tail.some(x => x !== 0)) corner.tail = tail; for (let k = 0; k < 4; k++) expect(0xffffffff, u32(), '转角尾'); }   // v67: 开叉 keeps [0, 0, A, B, C, D]
-    corners.push(corner);
-  }
-  if (bytes.length - o !== 160) fail('文件尾长度不符'); zeros(160, '文件尾');
-  if (gradePoints.some((point, index) => !curves[point.owner - 1] || !(curves[point.owner - 1].gradePoints || []).includes(curves.length * 2 + notches.length + points.length + index + 1))) fail('放码点没有被它的线引用');
-  return { header, root, nodes, notches, points, gradePoints, curves, pieces, texts, rows, corners };
 }
 
 // ---------------------------------------------------------------- geometry
@@ -492,7 +510,7 @@ function seamPathFrom(edge, fromTraversalStart) {
 // ET numbers the objects it creates from the current time. Identities written
 // here start well in the past, so a file opened right after export cannot clash.
 const IDENTITY_LEAD_SECONDS = 400000, MAX_IDENTITIES = 300000;
-export function planNewPrj(project, { now = new Date(), identityStart = Math.floor(now.getTime() / 1000) - IDENTITY_LEAD_SECONDS } = {}) {
+export function planNewPrj(project, { now = new Date(), identityStart = Math.floor(now.getTime() / 1000) - IDENTITY_LEAD_SECONDS, layers = true } = {}) {
   const problems = [], notes = [];
   if (!project || project.format !== 'zhiyi-cad' || !Array.isArray(project.entities)) throw new Error('当前工程无法识别。');
   if (project.units !== 'mm') problems.push('工程单位不是毫米。从 ET 导入且未确认比例的工程请使用原有的 PRJ 回存。');
@@ -929,7 +947,7 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
       model.header.grading = { activeSeries: table.activeSeries, names, rows: table.rows.map(row => ({ name: row.name, values: row.values.map(Math.fround) })) }; model.header.sizeName = base;
       const firstExtra = pendingCurves.length * 2 + pendingNotches.length + model.points.length, g = report.grading;
       const fail = reason => { g.notWritten++; if (!g.reasons.includes(reason)) g.reasons.push(reason); };
-      const ruleOf = anchor => anchor.plain ? null : { x: anchor.x, y: anchor.y, axisX: anchor.axisX.map(Math.fround), axisY: anchor.axisY.map(Math.fround) };
+      const ruleOf = anchor => anchor.plain ? null : { x: anchor.x, y: anchor.y, axisX: anchor.axisX.map(Math.fround), axisY: anchor.axisY.map(Math.fround), ...(anchor.unit === 'in' ? { inches: true } : {}) };
       const inside = (number, q, onLine, rule) => { model.gradePoints.push({ id: id(), x: q.x, y: q.y, owner: number, onLine, ...(rule ? { rule } : {}) }); (pendingCurves[number - 1].gradePoints ??= []).push(firstExtra + model.gradePoints.length); if (rule) { g.rules++; if (onLine) g.onLines++; } else g.dividingPoints++; };
       const atEnd = (number, start, rule) => { if (!rule) return; const node = model.nodes[number * 2 - (start ? 2 : 1)]; if (node.rule) return; node.rule = rule; g.rules++; };
       for (const anchor of plan.anchors) {
@@ -952,7 +970,7 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
       }
       // a rule on a notch goes to the notch on the net edge and to its twin on the seam line, as in ET's own files
       g.notchRules = 0;
-      for (const item of plan.notchRules || []) { const records = model.notches.filter(notch => notch.recipeId === item.notchId); if (!records.length) { fail('有带放码规则的刀口没有写入文件'); continue; } for (const notch of records) notch.rule = { x: item.x, y: item.y, axisX: item.axisX.map(Math.fround), axisY: item.axisY.map(Math.fround) }; g.notchRules++; }
+      for (const item of plan.notchRules || []) { const records = model.notches.filter(notch => notch.recipeId === item.notchId); if (!records.length) { fail('有带放码规则的刀口没有写入文件'); continue; } for (const notch of records) notch.rule = { x: item.x, y: item.y, axisX: item.axisX.map(Math.fround), axisY: item.axisY.map(Math.fround), ...(item.unit === 'in' ? { inches: true } : {}) }; g.notchRules++; }
       Object.assign(g, { written: true, sizes: plan.sizes.map(size => size.label), baseSize: base, tableRows: table.rows.length });
       notes.push('放码已写入：号型 ' + plan.sizes.map(size => size.label).join('、') + '（基码 ' + base + '），尺寸表 ' + table.rows.length + ' 项，' + g.rules + ' 个点的放码规则。文件里只有基码的图形；在 ET 里执行“推板展开”得到各码。' + (g.notWritten ? '有 ' + g.notWritten + ' 条规则没有写入：' + g.reasons.join('；') + '。' : ''));
       if ((project.gradingPlans || []).filter(item => item.method === 'table').length > 1) notes.push('工程里有不止一个按尺寸表放码的方案，ET 文件里只能记一个，写入的是“' + plan.name + '”。');
@@ -964,6 +982,7 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
   for (const piece of model.pieces) { piece.id = id(); piece.id2 = id(); }
   for (const text of model.texts) text.id = id();
   for (const row of model.rows) row.id = id();
+  if (layers) lockedLayers(project, model, report, notes, { now, identityStart }, recordsOf, id);
   const unsupported = [];
   if (project.seamChecks?.length) unsupported.push('对缝检查');
   if (project.gradingPlans?.some(plan => plan.method !== 'table') || project.grading?.length) unsupported.push('逐点输入位移的放码方案');
@@ -975,6 +994,46 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
   return { model, report };
 }
 
+// v69: the records of a station of a line: the end nodes of the line records it begins or ends, or the grading point inside a curve
+function nodesOfStation(records, model, lock) {
+  const list = records.get(lock.entityId); if (!list) return [];
+  if (list.length === 1 && list[0].kind === 4) {
+    const number = list[0].number, curve = model.curves[number - 1], last = curve.points.length - 1;
+    if (lock.index === 0) return [model.nodes[number * 2 - 2]]; if (lock.index === last) return [model.nodes[number * 2 - 1]];
+    const first = model.curves.length * 2 + model.notches.length + model.points.length, q = curve.points[lock.index];
+    return (curve.gradePoints || []).map(n => model.gradePoints[n - first - 1]).filter(point => point && q && point.x === q.x && point.y === q.y);
+  }
+  const out = [];
+  for (const record of list) { if (record.kind !== 2) continue; if (record.from === lock.index) out.push(model.nodes[record.number * 2 - 2]); if (record.to === lock.index) out.push(model.nodes[record.number * 2 - 1]); }
+  return out;
+}
+// v69: every size's layer for a plan with locks (ET's 锁定放码点, 锁定解锁当前层)
+function lockedLayers(project, model, report, notes, options, records, nextId) {
+  const plan = (project.gradingPlans || []).find(item => item.method === 'table'), g = report.grading;
+  if (!plan || !g?.written || (!(plan.locks || []).length && !(plan.lockedSizes || []).length)) return;
+  const fail = reason => { g.layersNotWritten = reason; notes.push('锁定的点没有写入 ET 文件（' + reason + '）；文件里只有基码，ET 推板展开后各码按规则生成。'); };
+  if (plan.anchors.some(anchor => anchor.between !== undefined)) return fail('有线上的放码点时还不能写出各码的图层');
+  const same = (a, b) => a.length === b.length && a.every((item, i) => item.id === b[i].id), layers = []; let marked = 0, missed = 0;
+  for (const size of [...plan.sizes].sort((a, b) => a.slot - b.slot)) {
+    let sized; try { sized = generateGradedSize(project, plan, size.id).project; } catch (error) { return fail('号型 ' + size.label + ' 没有生成：' + error.message); }
+    sized.gradingPlans = [plan];   // ET keeps the rules in every layer
+    let layer; try { layer = planNewPrj(sized, { ...options, layers: false }).model; } catch (error) { return fail('号型 ' + size.label + '：' + error.message); }
+    if (!same(layer.nodes, model.nodes) || !same(layer.notches, model.notches) || !same(layer.points, model.points) || !same(layer.gradePoints, model.gradePoints) || !same(layer.curves, model.curves) || !same(layer.pieces, model.pieces) || !same(layer.texts, model.texts) || !same(layer.rows, model.rows) || layer.corners.length !== model.corners.length)
+      return fail('号型 ' + size.label + ' 的线条记录和基码的不同');
+    let here = 0;
+    for (const lock of plan.locks || []) {
+      if (lock.sizeId !== size.id || lock.layer) continue;
+      const nodes = nodesOfStation(records, layer, lock); if (!nodes.length) { missed++; continue; }
+      for (const node of nodes) if (!node.locked) { node.locked = true; here++; }
+    }
+    marked += here;
+    layers.push({ slot: size.slot, flag: ((plan.lockedSizes || []).includes(size.id) ? 8 : 0) | (here ? 2 : 0), name: size.label, root: { id: nextId() },
+      nodes: layer.nodes, notches: layer.notches, points: layer.points, gradePoints: layer.gradePoints, curves: layer.curves, pieces: layer.pieces, texts: layer.texts, rows: layer.rows, corners: layer.corners });
+  }
+  model.layers = layers;
+  Object.assign(g, { layers: layers.map(layer => layer.name), lockedPoints: marked, lockedSizes: layers.filter(layer => layer.flag & 8).map(layer => layer.name), locksNotWritten: missed });
+  notes.push('各码的图形也写入了（' + layers.map(layer => layer.name).join('、') + '），锁定的点 ' + marked + ' 个' + (g.lockedSizes.length ? '，整码锁定 ' + g.lockedSizes.join('、') : '') + '；ET 推板展开时不动它们。' + (missed ? '有 ' + missed + ' 个锁定的点不是线端或放码点，ET 文件记不了，没有写入。' : ''));
+}
 /** Plan, encode and prove that the bytes decode back to exactly the planned model. */
 export function createNewPrjExport(project, options = {}) {
   const { model, report } = planNewPrj(project, options), bytes = encodeNewPrj(model);

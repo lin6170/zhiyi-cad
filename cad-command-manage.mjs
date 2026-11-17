@@ -41,7 +41,7 @@ export const manageCommands = [
       if (!moved) throw new Error('这些裁片的' + EDGES[p.edge] + '已经对齐。');
       return { summary: { operation: 'piece.align', edge: p.edge, base: base.group.name, moved } };
     } },
-  { type: 'piece.arrange', title: '裁片排列', description: '把裁片一个挨一个排成几行，互不重叠，方便查看和出图。不给 groupIds 时排列全部没有锁定的裁片。gap 是裁片之间的间隔；rowWidth 是一行的最大宽度，超过就换行，不给时按总面积估一个宽度，排出来大约是一个横放的长方形。一行里各裁片的宽度加上它们之间的间隔，总和不超过 rowWidth 就排在同一行；要排成一横排，rowWidth 给一个比这个总和大的数。第一行从这些裁片现在所占范围的左上角开始，高的裁片排在前面。范围按裁片的全部线条算，包括缝份线。',
+  { type: 'piece.arrange', title: '裁片排列', description: '把裁片一个挨一个排成几行，互不重叠，方便查看和出图。不给 groupIds 时排列全部没有锁定的裁片。gap 是裁片之间的间隔；rowWidth 是一行的最大宽度，超过就换行，不给时按总面积估一个宽度，排出来大约是一个横放的长方形。一行里各裁片的宽度加上它们之间的间隔，总和不超过 rowWidth 就排在同一行；要排成一横排，rowWidth 给一个不小于这个总和的数（等于也行）。第一行从这些裁片现在所占范围的左上角开始，高的裁片排在前面。范围按裁片的全部线条算，包括缝份线，不包括文字。',
     input_schema: object({ groupIds: idList('要排列的裁片', 1), gap: number(0, 1000, '裁片之间的间隔，毫米，默认 20'), rowWidth: { type: 'number', exclusiveMinimum: 0, maximum: LIMIT, description: '一行的最大宽度，毫米' } }, []),
     run(project, p) {
       requireMm(project);
@@ -64,7 +64,7 @@ export const manageCommands = [
       if (!moved) throw new Error('这些裁片已经是这样排列的。');
       return { summary: { operation: 'piece.arrange', pieces: list.length, rows, moved, rowWidthMm: round(rowWidth), gapMm: gap } };
     } },
-  { type: 'piece.setLocked', title: '锁定或解锁裁片', description: '锁定裁片：锁定之后，这个裁片不能被移动、修改或删除，直到解锁。locked 为 true 锁定，为 false 解锁。',
+  { type: 'piece.setLocked', title: '锁定或解锁裁片', description: '锁定裁片：锁定之后，这个裁片不能被移动、修改或删除，直到解锁。locked 为 true 锁定，为 false 解锁。放码里的锁定（在某个号型里锁定点、整码锁定一个号型）不是这条，是 grade.lock、grade.lockSize。',
     input_schema: object({ groupIds: idList('裁片', 1), locked: { type: 'boolean', description: 'true 锁定，false 解锁' } }, ['groupIds', 'locked']),
     run(project, p) {
       requireMm(project);

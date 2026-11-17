@@ -66,13 +66,15 @@ export function readSizeSystem(input) {
 function layerAt(bytes, view, root, names) {
   // u32 1 (this position has a layer), u32 1, id, u32 0, colour, f32 1, u32 0, flag byte, name, u32 9, point count, first point
   if (root < 0 || root + 44 > bytes.length || view.getUint32(root, true) !== 1 || view.getUint32(root + 4, true) !== 1 || view.getUint32(root + 12, true) !== 0) return null;
-  if (view.getFloat32(root + 19, true) !== 1 || view.getUint32(root + 23, true) !== 0 || (bytes[root + 27] & 0x7e)) return null;
+  // flag byte: bit 0 the base size; bit 1 the layer holds locked points (ET sets it when it expands); bit 3 the whole size locked (v69)
+  if (view.getFloat32(root + 19, true) !== 1 || view.getUint32(root + 23, true) !== 0 || (bytes[root + 27] & 0x74)) return null;
   const length = view.getUint16(root + 28, true); if (length < 1 || length > 60 || root + 42 + length > bytes.length) return null;
   let name; try { name = new TextDecoder('gb18030', { fatal: true }).decode(bytes.subarray(root + 30, root + 30 + length)); } catch { return null; }
   if (names && !names.has(name)) return null;
-  const after = root + 30 + length; if (view.getUint32(after, true) !== 9) return null;
+  // 9 after the name; 11 in a file ET saved while one size was shown alone (v68: the layers are the same otherwise)
+  const after = root + 30 + length, word = view.getUint32(after, true); if (word !== 9 && word !== 11) return null;
   const count = view.getUint32(after + 4, true), first = view.getUint32(after + 8, true); if (count > 200000 || (count && first !== 6 && first !== 7)) return null;
-  return { name, base: (bytes[root + 27] & 1) === 1, offset: root, pointsAt: after + 8, pointCount: count };
+  return { name, base: (bytes[root + 27] & 1) === 1, locked: (bytes[root + 27] & 8) === 8, holdsLocks: (bytes[root + 27] & 2) === 2, offset: root, pointsAt: after + 8, pointCount: count };
 }
 
 /** The size layers of a 2.0 file in file order; one layer for a file that was not expanded. Null when the header is not understood. */
@@ -117,10 +119,13 @@ export function readPointRules(input, pointsAt, pointCount) {
   for (let i = 0; i < pointCount; i++) {
     const offset = r.o, type = r.u32(); if (type !== 6 && type !== 7) throw new Error('point type ' + type);
     const id = r.u32(); r.skip(3); const flags = [r.u8(), r.u8(), r.u8()], x = r.f32(), y = r.f32(); r.f32(); const owner = r.u32(), kind = r.u32(), point = { index: i, offset, type, id, flags, x, y, owner, kind };
+    if (flags[0] & 8) point.locked = true;   // v69: ET's 锁定放码点 (in a layer other than the base)
     if (flags[0] & 0x40) {
       const a = r.u32(), b = r.u8(), fx = r.str(), fy = r.str(), p1 = r.u32(), p2 = r.u32(), master = r.u32(), c = r.u8(), ax = [r.f32(), r.f32(), r.f32()], ay = [r.f32(), r.f32(), r.f32()], count = r.u32();
       if (count > 1000) throw new Error('followers'); const followers = Array.from({ length: count }, () => { r.u32(); return r.u32(); });
-      point.rule = { kind, x: fx, y: fy, axisX: [ax[0], ax[1]], axisY: [ay[0], ay[1]], master: kind === 10 ? master : 0, followers, plain: a === 0 && b === 0 && p1 === 0 && p2 === 0 && c === 0 && ax[2] === 0 && ay[2] === 0 && (kind === 10 || master === 0) };
+      // v68: bit 0 of the first flag byte is set on a rule made in ET's dialogs while ET works in inches: the numbers written in its
+      // formulas are inches then (the names of the size table stay centimetres)
+      point.rule = { kind, x: fx, y: fy, axisX: [ax[0], ax[1]], axisY: [ay[0], ay[1]], master: kind === 10 ? master : 0, followers, inches: (flags[0] & 1) === 1, plain: a === 0 && b === 0 && p1 === 0 && p2 === 0 && c === 0 && ax[2] === 0 && ay[2] === 0 && (kind === 10 || master === 0) };
     } else if (kind !== 0 && type === 6 && !(flags[2])) point.kindWithoutRule = kind;
     if (type === 7) r.skip(46);
     points.push(point);
@@ -143,10 +148,14 @@ export function readSizes(input, nodes) {
   const layer = layers.find(item => item.base) || layers[0]; let read;
   try { read = readPointRules(bytes, layer.pointsAt, layer.pointCount); } catch (error) { return { ...none('点的放码规则没有读懂（' + error.message + '）'), activeSeries: system.activeSeries, table: system.table }; }
   const byOffset = new Map((nodes || []).map((node, index) => [node.offset, index])), rules = [];
-  for (const point of read.points) if (point.rule) rules.push({ node: byOffset.has(point.offset) ? byOffset.get(point.offset) : null, pointNumber: point.index + 1, onNotch: point.type === 7, kind: point.rule.kind, x: point.rule.x, y: point.rule.y, axisX: point.rule.axisX, axisY: point.rule.axisY, master: point.rule.master, plain: point.rule.plain });
+  for (const point of read.points) if (point.rule) rules.push({ node: byOffset.has(point.offset) ? byOffset.get(point.offset) : null, pointNumber: point.index + 1, onNotch: point.type === 7, kind: point.rule.kind, x: point.rule.x, y: point.rule.y, axisX: point.rule.axisX, axisY: point.rule.axisY, inches: point.rule.inches, master: point.rule.master, plain: point.rule.plain });
   const series = system.series.map((names, index) => ({ name: seriesName(index), sizes: names.map((name, slot) => name ? { slot, name } : null).filter(Boolean) }));
+  // v69: the locks of the other layers: the points ET locked there, where they stand there; and the points of a layer locked whole
+  const lockOf = item => { if (item.base) return {}; let points; try { points = readPointRules(bytes, item.pointsAt, item.pointCount).points; } catch (error) { return { lockProblem: error.message }; }
+    const placed = point => ({ pointNumber: point.index + 1, x: point.x, y: point.y });
+    return { lockedPoints: points.filter(point => point.locked).map(placed), ...(item.locked ? { allPoints: points.map(placed) } : {}) }; };
   return { readable: true, activeSeries: system.activeSeries, names: series[system.activeSeries].sizes, series, baseSlot: layer.slot, baseName: layer.name, table: system.table.map(row => ({ name: row.name, values: [...row.values] })), rules,
-    layers: layers.map(item => ({ name: item.name, base: item.base, slot: item.slot })) };
+    layers: layers.map(item => ({ name: item.name, base: item.base, slot: item.slot, ...(item.locked ? { locked: true } : {}), ...(item.holdsLocks ? { holdsLocks: true } : {}), ...lockOf(item) })) };
 }
 
 /** One size of a file with several layers, as a single-size file (the same bytes ET would write for that size alone). Null when there is no such layer. */

@@ -29,6 +29,8 @@ export function parsePrj(input, filename = 'ET project.prj') {
   if (layered.spliced) {
     const project = parsePrj(layered.bytes, filename);
     project.metadata.sizeLayers = layered.layers.map(layer => ({ name: layer.name, base: layer.base, slot: layer.slot }));
+    // v69: the locks of the other sizes are read from the whole file (the rules and offsets above stay those of the base's copy)
+    const whole = readSizes(bytes, []); if (whole.readable && project.metadata.sizeSystem?.readable) project.metadata.sizeSystem.layers = whole.layers;
     project.warnings.splice(1, 0, '文件里存着 ' + layered.layers.length + ' 个码的图形（' + layered.layers.map(layer => layer.name).join('、') + '）。这里读入的是基码 ' + layered.base + '；其余各码按放码规则生成，转成可编辑工程后可以预览和导出。');
     return project;
   }

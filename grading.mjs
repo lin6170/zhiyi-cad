@@ -77,7 +77,18 @@ export function reconcileTablePlan(project,plan){
     }
   }
   const notchIds=new Set((project.notches||[]).map(notch=>notch.id)),notchRules=(plan.notchRules||[]).filter(rule=>notchIds.has(rule.notchId));lost+=(plan.notchRules||[]).length-notchRules.length;
-  return {plan:{...plan,sources:originals.map(gradeSource),anchors,notchRules,lostRules:(plan.lostRules||0)+lost},reattached,lost};
+  const {alignment,locks:oldLocks,lockedSizes:oldSizes,...rest}=plan,kept=alignment&&byId.has(alignment.entityId)&&byId.get(alignment.entityId).type!=='text'?{alignment}:{};   // the view's alignment goes when its line goes (v68)
+  // v69: a lock stays on its station: the same number when the line keeps its number of points, else the point on the same place
+  const locks=[];let lostLocks=0;
+  for(const lock of oldLocks||[]){
+    const line=stationsFor(lock.entityId),entity=byId.get(lock.entityId);if(!line||!entity||entity.type==='text'){lostLocks++;continue;}
+    const count=line.points.length;let index=(lock.stations===undefined||lock.stations===count)&&lock.index<count?lock.index:-1;
+    if(index<0&&lock.at)index=line.points.findIndex(p=>near(p,lock.at));
+    if(index<0){lostLocks++;continue;}
+    locks.push({...lock,index,at:{x:line.points[index].x,y:line.points[index].y},stations:count});
+  }
+  const sizeIds=new Set(plan.sizes.map(size=>size.id)),lockedSizes=(oldSizes||[]).filter(id=>sizeIds.has(id));
+  return {plan:{...rest,...kept,sources:originals.map(gradeSource),anchors,notchRules,lostRules:(plan.lostRules||0)+lost,...(locks.length?{locks}:{}),...(lockedSizes.length?{lockedSizes}:{}),...(lostLocks||plan.lostLocks?{lostLocks:(plan.lostLocks||0)+lostLocks}:{})},reattached,lost};
 }
 function scopedProject(project,plan){
   resolveGradeSources(project,plan);
@@ -133,6 +144,7 @@ export function generateGradedSize(project,value,sizeId){
   if(plan.method==='table'){
     applyTableGrading(result.entities,plan,size);
     if(plan.lostRules)result.warnings.push('有 '+plan.lostRules+' 个放码点原来所在的线被删除或改动以后，原来的位置上找不到点了，它们的规则已经去掉。核对后“更新放码方案”，这条提示就消掉。');
+    if(plan.lostLocks)result.warnings.push('有 '+plan.lostLocks+' 个锁定的点原来所在的线被删除或改动以后找不到了，这些锁定已经去掉。');
     // The rules of two points on the same place can differ a little (other axes, another divisor), and then two neighbouring
     // contour edges come apart by a fraction of a millimetre in a size. They are brought together as when an ET file is opened.
     const byId=new Map(result.entities.map(entity=>[entity.id,entity]));
@@ -222,7 +234,8 @@ export function applyGradingPlan(project,value,makeId,planId=null){
   let config=normalizeGradingPlan(value);if(config.method==='table')config=reconcileTablePlan(project,config).plan;resolveGradeSources(project,config);scopedProject(project,config);
   const plans=project.gradingPlans||[],existing=plans.find(plan=>plan.id===planId);
   if(planId&&!existing)throw new Error('待更新的放码方案已缺失');if(!existing&&plans.length>=30)throw new Error('最多支持 30 个放码方案');
-  const plan=existing||{id:makeId()};Object.assign(plan,config);if(!existing)plans.push(plan);project.gradingPlans=plans;project.version=Math.max(project.version,8);syncGradingPlans(project);return plan;
+  const plan=existing||{id:makeId()};Object.assign(plan,config);for(const key of ['alignment','locks','lockedSizes','lostLocks'])if(config[key]===undefined)delete plan[key];   // v68, v69: what the new value leaves out goes
+  if(!existing)plans.push(plan);project.gradingPlans=plans;project.version=Math.max(project.version,8);syncGradingPlans(project);return plan;
 }
 export function coincidentGradePoints(project,value,entityId,index,tolerance=.01){
   const plan=normalizeGradingPlan(value),entities=resolveGradeSources(project,plan),entity=entities.find(e=>e.id===entityId),point=entity&&gradePoints(entity)[index];

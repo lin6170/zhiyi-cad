@@ -4,9 +4,11 @@
  * the first of them makes it. With these the assistant can grade a pattern, not only the grading panel.
  */
 import { number, point, text, object, requireMm, entityOf, round } from './cad-command-kit.mjs';
-import { createTablePlan, applyGradingPlan, normalizeGradingPlan } from './grading.mjs';
+import { createTablePlan, applyGradingPlan, normalizeGradingPlan, generateGradedSize } from './grading.mjs';
 import { stationsOf, placeOnLine, ruleDisplacement } from './grading-table.mjs';
 import { parseFormula, formulaNames } from './size-formula.mjs';
+import { alignmentPlace, bakeAlignment, alignedMove } from './grading-align.mjs';
+import { lockPoints, unlockPoints, lockSize, moveInSize, stationsAtPlace, SAME_MM as LOCK_MM } from './grading-locks.mjs';
 
 const REACH_MM = .5, SAME_PLACE_MM = .05;   // how near a given place must be to a point or to the line; when two points count as one place
 const formula = description => ({ type: 'string', minLength: 0, maxLength: 300, description });
@@ -28,6 +30,20 @@ function checkFormula(textValue, names, which) {
   let tree; try { tree = parseFormula(textValue); } catch (error) { throw new Error(which + '公式“' + textValue + '”读不懂：' + error.message + '。'); }
   for (const name of formulaNames(tree)) if (!names.has(name)) throw new Error(which + '公式“' + textValue + '”用到了尺寸表里没有的“' + name + '”。尺寸表现有：' + ([...names].join('、') || '还没有项目') + '。');
 }
+// v69: the sizes a lock is for (by their names; the base size is refused, as ET never locks a point of the base size)
+const labelOf = (value, id) => (value.sizes.find(size => size.id === id) || {}).label || id;
+function sizeIdsOf(value, labels, what) {
+  if (labels === undefined || labels === null) return value.sizes.map(size => size.id);
+  if (!Array.isArray(labels) || !labels.length) throw new Error('sizes 要列出号型名称；不给时是除基码以外的全部号型。');
+  return [...new Set(labels.map(label => sizeIdOf(value, label, what)))];
+}
+function sizeIdOf(value, label, what) {
+  const name = String(label ?? '').trim();
+  if (name === value.baseSize) throw new Error('基码“' + name + '”的点不能' + what + '（ET 也不锁基码上的点）；基码要改就直接改图。');
+  const size = value.sizes.find(item => item.label === name); if (!size) throw new Error('号型里没有“' + name + '”。现有：' + value.sizes.map(item => item.label).join('、') + '（基码 ' + value.baseSize + '）。');
+  return size.id;
+}
+const maker = (project, value) => sizeId => generateGradedSize(project, value, sizeId);
 /** The line of a rule and where on it a given place lies: one of its points ({ index }) or a place between two of them ({ between }). */
 function locate(project, value, entityId, at) {
   const entity = entityOf(project, entityId);
@@ -52,7 +68,7 @@ function ruleAt(project, value, found) {
 const movesOf = (plan, rule) => plan.sizes.slice().sort((a, b) => a.slot - b.slot).map(size => { const d = ruleDisplacement(plan, size, rule); return { size: size.label, dxMm: round(d.dx), dyMm: round(d.dy) }; });
 
 export const gradingCommands = [
-  { type: 'grade.setSizes', title: '设置号型', description: '按尺寸表放码（ET 的做法）的第一步：给出从小到大的全部号型名称，并指出其中的基码。图里还没有这种放码方案时会建立一个，它管整张图；已经有时按新的名单增减号型，尺寸表和规则保留；新加的号型，尺寸表每一项按该项基码的数值和档差顺延出数值，不用再逐项填，个别码要不一样时再用“尺寸表项目”改。之后用“尺寸表项目”填尺寸表，用“放码规则”给点设规则。',
+  { type: 'grade.setSizes', title: '设置号型', description: '按尺寸表放码（ET 的做法）的第一步：给出从小到大的全部号型名称，并指出其中的基码。图里还没有这种放码方案时会建立一个，它管整张图；已经有时按新的名单增减号型，尺寸表和规则保留；新加的号型，尺寸表每一项按该项基码的数值和档差顺延出数值（档差是建立这一项或最后一次给 step 时的每码增量；场景里只有各码的数值，均匀时就是相邻两码的差），不用再逐项填，个别码要不一样时再用“尺寸表项目”改。之后用“尺寸表项目”填尺寸表，用“放码规则”给点设规则。',
     input_schema: object({ sizes: { type: 'array', description: '全部号型的名称，从小到大，含基码', items: text(50, '号型名称'), minItems: 2, maxItems: 13 }, base: text(50, '基码的名称，必须在名单里') }, ['sizes', 'base']),
     run(project, p, env) {
       requireMm(project);
@@ -100,7 +116,9 @@ export const gradingCommands = [
       const existing = need(project), value = open(existing), names = new Set(value.sizeTable.rows.map(row => row.name));
       if (p.x !== undefined) checkFormula(p.x, names, '水平'); if (p.y !== undefined) checkFormula(p.y, names, '竖直');
       const found = locate(project, value, p.entityId, p.at), { own, twins } = ruleAt(project, value, found), created = !own;
-      const change = rule => { if (p.x !== undefined) rule.x = p.x.trim(); if (p.y !== undefined) rule.y = p.y.trim(); if (p.angle !== undefined) Object.assign(rule, axesOf(p.angle)); };
+      // v68: a rule ET wrote in inches (its numbers are inches) is changed as a whole: both formulas are given and are centimetres
+      if (own && own.unit === 'in' && (p.x === undefined || p.y === undefined)) throw new Error('这个点的规则是 ET 按英寸写的（公式里的数字按英寸算）。改它时请同时给出 x 和 y 两个公式，按厘米写。');
+      const change = rule => { if (p.x !== undefined) rule.x = p.x.trim(); if (p.y !== undefined) rule.y = p.y.trim(); if (p.angle !== undefined) Object.assign(rule, axesOf(p.angle)); delete rule.unit; };
       let rule = own;
       if (own) { for (const twin of twins) change(twin); change(own); }
       else {
@@ -120,6 +138,80 @@ export const gradingCommands = [
       const plan = store(project, env, value, existing);
       return { summary: { operation: 'grade.removeRule', entityId: found.entity.id, line: found.entity.name, where: found.name, at: { x: round(found.at.x), y: round(found.at.y) }, removed: gone.size, rules: plan.anchors.filter(anchor => !anchor.plain).length } };
     } },
+  { type: 'grade.align', title: '放码对齐', description: 'ET 推板里的“对齐”和“线对齐”。mode point：各码的这一片按一个点重合，at 是这片上一条线的端点或曲线经过的点（裁片轮廓是一条闭合折线时，它的转角也算）；axis 为 both 时点重合，y 只对齐高低（ET 按 Shift），x 只对齐左右（ET 按 Ctrl）。mode line：各码的这一片按它的一条直线重合，at 是这条直线上的位置（轮廓是折线时，at 落在哪一段就用哪一段）：各码这条线长短不同，对到 at 的是每个码在这条线上离较近那一端同样远的点，不是各码自己的中点（ET 就是这样；at 正好在中点时从线的起点量，闭合折线的起点是 at 所在这一段在折线里的前一个点），线转到基码的方向，所以结果是各码这条线较近的那一端重合、线叠在一起。师傅没说保留、写进规则或改放码基准时不给 keep。keep 不给或为 false（ET 的“普通”）时只改看的样子：对齐记在放码方案里（场景的 grading.alignment），预览叠码时这样画，这也算一次修改。keep 为 true（ET 的“保留”）时把对齐写进这片外轮廓各角点的规则，各码就这样放出来：axis both 时对齐的角点成为不动点；axis 为 y 或 x 时只把这个方向写进规则，另一个方向的移动照旧（和 ET 按 Shift、Ctrl 保留一样）；在各码都不动的角点不再有规则（曲线中间带规则的点、线上的放码点、内部线不改，和 ET 一样）；新规则每码一样时写成一个数，不一样时在尺寸表里加 MS…ID… 行，之后不再留着看的对齐；这些规则不再跟着尺寸表的项目变，之后改尺寸表不会带动它们，宜在回复里告诉师傅。clear 为 true 时去掉看的对齐（其他参数不用给）；用 keep 写进规则的不会因此撤回，要撤回用撤销。散线和别的裁片不动。',
+    input_schema: object({ entityId: text(120, '对齐点或对齐直线所在的线（要在裁片上）'), at: point('对齐的位置：点，或直线上的位置（毫米，和场景一样）'), mode: { type: 'string', enum: ['point', 'line'], description: 'point 按点对齐，line 按直线对齐' }, axis: { type: 'string', enum: ['both', 'x', 'y'], description: '按点对齐时：both 点重合（默认），y 只对齐高低，x 只对齐左右（keep 时也只把这个方向写进规则）' }, keep: { type: 'boolean', description: 'true 把对齐写进外轮廓角点的规则（ET 的“保留”）；默认 false 只改看的样子' }, clear: { type: 'boolean', description: 'true 去掉对齐' } }, []),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing);
+      if (p.clear) { const had = Boolean(value.alignment); delete value.alignment; store(project, env, value, existing); return { summary: { operation: 'grade.align', cleared: had } }; }
+      if (!p.entityId || !p.at || !p.mode) throw new Error('对齐要给出 entityId、at 和 mode（point 或 line）；去掉对齐用 clear。');
+      const alignment = { mode: p.mode, entityId: p.entityId, at: { x: p.at.x, y: p.at.y }, axis: p.mode === 'point' ? (p.axis || 'both') : 'both' }, place = alignmentPlace(project, alignment);
+      if (p.keep) {
+        const baked = bakeAlignment(project, value, alignment), plan = store(project, env, baked.value, existing);
+        return { summary: { operation: 'grade.align', kept: true, mode: p.mode, piece: place.piece.name, cornersChanged: baked.changed, cornersFixed: baked.fixed, rows: plan.sizeTable.rows.length } };
+      }
+      value.alignment = alignment; store(project, env, value, existing);
+      return { summary: { operation: 'grade.align', kept: false, mode: p.mode, piece: place.piece.name, at: { x: round(place.point.x), y: round(place.point.y) }, ...(p.mode === 'point' ? { axis: alignment.axis } : { from: place.from, distanceMm: round(place.distance) }) } };
+    } },
+  { type: 'grade.lock', title: '锁定放码点', description: 'ET 推板里的“锁定放码点”（这是放码里的锁定；把裁片锁住、防止误改是 piece.setLocked）：at 位置上的点（线的端点、曲线经过的点、闭合折线的转角或线上的放码点；同一位置上几条线的点一起，和 ET 框选一样）在 sizes 列出的号型里锁定在它在这个号型里现在的位置，以后改规则、改尺寸表、改基码、重新生成各码都不再移动它们；写进 ET 文件时是锁定的点，ET 推板展开也不动它们。sizes 不给时锁定除基码以外的全部号型（ET 显示全部号型时就是这样）。基码的点不能锁（ET 也不锁），基码要改就直接改图。要先把点挪到别处再锁定，用 grade.moveInSize（它移动后自动锁定）。at 是基码图上的位置（毫米，和场景一样）。加上锁定就算一次修改，即使各码现在看起来没有变。',
+    input_schema: object({ at: point('点在基码图上的位置（毫米）'), sizes: { type: 'array', minItems: 1, maxItems: 13, items: text(50, '号型名称'), description: '在哪些号型里锁定；不给时是除基码以外的全部号型' } }, ['at']),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing), ids = sizeIdsOf(value, p.sizes, '锁定'), result = lockPoints(project, value, p.at, ids, maker(project, value));
+      store(project, env, result.value, existing);
+      return { summary: { operation: 'grade.lock', at: { x: round(result.stations[0].at.x), y: round(result.stations[0].at.y) }, points: result.stations.length, sizes: ids.map(id => labelOf(value, id)) } };
+    } },
+  { type: 'grade.unlock', title: '解锁放码点', description: 'ET 推板里的“解锁放码点”：at 位置上的点（同 grade.lock）在 sizes 列出的号型里不再锁定，下次生成各码时回到规则给的位置。sizes 不给时解锁全部号型。整码锁定（grade.lockSize）的号型仍然整码保持，要用 grade.lockSize 解锁那个码。去掉锁定就算一次修改，即使规则给的位置和锁定的位置一样。这个位置在这些号型里没有单独锁定的点时这条命令报错，不要这样排步骤。',
+    input_schema: object({ at: point('点在基码图上的位置（毫米）'), sizes: { type: 'array', minItems: 1, maxItems: 13, items: text(50, '号型名称'), description: '在哪些号型里解锁；不给时是全部号型' } }, ['at']),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing), ids = sizeIdsOf(value, p.sizes, '解锁'), result = unlockPoints(project, value, p.at, ids);
+      if (!result.stations.length) throw new Error('这个位置上没有放码方案里的线的端点或放码点（离它 ' + LOCK_MM + ' mm 以内）。');
+      if (!result.unlocked) throw new Error('这个位置的点在' + ids.map(id => labelOf(value, id)).join('、') + '里没有单独锁定' + ((value.lockedSizes || []).some(id => ids.includes(id)) ? '（所在的号型是整码锁定的，要用 grade.lockSize 解锁）' : '') + '。');
+      store(project, env, result.value, existing);
+      return { summary: { operation: 'grade.unlock', points: result.stations.length, unlocked: result.unlocked, sizes: ids.map(id => labelOf(value, id)) } };
+    } },
+  { type: 'grade.lockSize', title: '锁定解锁当前码', description: 'ET 推板里的“锁定解锁当前层”：locked 为 true 时把 size 这个号型现在的样子整码保持（这个码里放码方案的每条线的每个点都锁定），以后改规则、改基码都不再变；写进 ET 文件时这个码的图层是锁定的。locked 为 false 时解锁，这个码重新按规则生成（单独锁定的点仍然锁定）。基码不能锁。已经是要的状态时这条命令报错（不算修改），不要这样排步骤。',
+    input_schema: object({ size: text(50, '号型名称（不是基码）'), locked: { type: 'boolean', description: 'true 整码锁定，false 解锁' } }, ['size', 'locked']),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing), id = sizeIdOf(value, p.size, p.locked ? '锁定' : '解锁'), was = (value.lockedSizes || []).includes(id);
+      if (was === Boolean(p.locked)) throw new Error('号型“' + labelOf(value, id) + '”' + (was ? '已经整码锁定了。' : '没有整码锁定。'));
+      const result = lockSize(project, value, id, Boolean(p.locked), maker(project, value));
+      store(project, env, result.value, existing);
+      return { summary: { operation: 'grade.lockSize', size: labelOf(value, id), locked: Boolean(p.locked), points: result.stations } };
+    } },
+  { type: 'grade.moveInSize', title: '在一个码上改点', description: 'ET 推板里在某一个号型上单独改点（推板状态下把这个码设为当前层再用“端移动”）：at（基码图上的位置，毫米；线的端点、曲线经过的点或闭合折线的转角）上的点在 size 这个号型里移到 to（这个号型里的位置，毫米），或者从它在这个号型里现在的位置移动 dx、dy（毫米，向右、向上为正；只给一个时另一个是 0；给了 to 就不看 dx、dy）；别的号型和放码规则都不变。和 ET 一样，移动的点在这个号型里锁定，经过它的线的另一端也锁定在现在的位置：直线锁另一端，曲线锁两端，折线（包括闭合折线）锁这个转角两边相邻的点；以后重新生成、推板展开都不会改回去，要回到规则给的位置用 grade.unlock。基码不能这样改，基码要直接改图。',
+    input_schema: object({ size: text(50, '号型名称（不是基码）'), at: point('点在基码图上的位置（毫米）'), to: point('在这个号型里移到哪里（毫米）'), dx: number(-10000, 10000, '或者：在这个号型里向右移动多少毫米'), dy: number(-10000, 10000, '或者：在这个号型里向上移动多少毫米') }, ['size', 'at']),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing), id = sizeIdOf(value, p.size, '这样改'), generate = maker(project, value);
+      const stations = stationsAtPlace(project, value, p.at); if (!stations.length) throw new Error('这个位置上没有放码方案里的线的端点或放码点（离它 ' + LOCK_MM + ' mm 以内）。');
+      let to = p.to;
+      if (!to) {
+        if (p.dx === undefined && p.dy === undefined) throw new Error('请给出 to（这个号型里的新位置），或者 dx、dy（移动多少毫米）。');
+        const sized = generate(id).project.entities.find(item => item.id === stations[0].entityId), now = stationsOf(sized).points[stations[0].index];
+        to = { x: now.x + (p.dx || 0), y: now.y + (p.dy || 0) };
+      }
+      const result = moveInSize(project, value, id, p.at, to, generate);
+      store(project, env, result.value, existing);
+      return { summary: { operation: 'grade.moveInSize', size: labelOf(value, id), at: { x: round(stations[0].at.x), y: round(stations[0].at.y) }, to: { x: round(to.x), y: round(to.y) }, points: result.stations.length, endsLocked: result.ends.length } };
+    } },
+  { type: 'grade.alignedMove', title: '对齐移动点', description: 'ET 推板里的“点对齐移动点规则”和“线对齐移动点规则”：先按一个点（mode point）或一条直线（mode line，at 是直线上的位置，规则同“对齐”）把这片的各码对齐，再给同一片上的目标点 target 设规则，使它在对齐后的样子里每大一个码移动 x、y 厘米。x 向右为正、y 向上为正，沿基码的水平、竖直方向（往外是离开裁片中间：右边的点往外放是正数，左边的点是负数）；不给的那一项保持目标点现在在对齐后的样子里的移动，只改给了的方向（和“放码规则”不给的一项保持原样一样）；要它在这个方向相对对齐点不动就给 0。也可以用 perSize 按号型逐个给出离基码的移动量（没给的方向同样保持）。目标点原来的规则换成新的，不是在原来的规则上加。按点对齐时，目标点在每个码里的移动 = 对齐点在这个码里的移动 + 给的量；按线对齐时还要随这条线转。例如“口袋右上角相对左上角每码横向放 0.8”：对齐点是口袋左上角，target 是口袋右上角，x 0.8，不给 y，右上角在竖直方向照旧。规则按 ET 的写法存：每码一样就写一个数，否则在尺寸表里加一行 MS…ID…，所以目标点的新规则不再跟着尺寸表的项目变，之后改尺寸表不会带动它（给不给 keep 都这样），宜在回复里告诉师傅。keep 为 true（ET 的“保留”）时先把对齐写进外轮廓角点的规则（同“对齐”的 keep），对齐点不再动，目标点给了的方向的规则就是给的数；这些角点的规则同样成了数（或 MS 行）。目标位置上的几个点（转角处两条线的端点）一起设；at 和 target 也可以是闭合折线的转角。这条命令不改看的对齐（场景的 grading.alignment 不变）。',
+    input_schema: object({ entityId: text(120, '对齐点或对齐直线所在的线（要在裁片上）'), at: point('对齐的位置'), mode: { type: 'string', enum: ['point', 'line'], description: 'point 按点对齐，line 按直线对齐' }, target: point('目标点的位置（同一片上线的端点或曲线经过的点）'), x: number(-1000, 1000, '每大一个码横向移动多少厘米'), y: number(-1000, 1000, '每大一个码纵向移动多少厘米'),
+      perSize: { type: 'array', description: '按号型逐个给出离基码的移动量（厘米），给了就不看 x、y', minItems: 1, maxItems: 13, items: object({ size: text(50, '号型名称'), x: number(-10000, 10000, '横向，厘米'), y: number(-10000, 10000, '纵向，厘米') }, ['size']) },
+      keep: { type: 'boolean', description: 'true 先把对齐写进外轮廓角点的规则（ET 的“保留”）' } }, ['entityId', 'at', 'mode', 'target']),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing), alignment = { mode: p.mode, entityId: p.entityId, at: { x: p.at.x, y: p.at.y }, axis: 'both' };
+      let amounts;
+      if (p.perSize && p.perSize.length) {
+        amounts = { perSize: value.sizes.map(size => { const given = p.perSize.find(item => item.size.trim() === size.label); if (!given) throw new Error('perSize 里缺少号型“' + size.label + '”（基码不用给）。'); return { sizeId: size.id, x: given.x, y: given.y }; }) };
+        for (const item of p.perSize) if (item.size.trim() !== value.baseSize && !value.sizes.some(size => size.label === item.size.trim())) throw new Error('号型“' + item.size + '”不在这套放码里。');
+      } else { if (p.x === undefined && p.y === undefined) throw new Error('请给出每码横向 x 或纵向 y 移动多少厘米，或用 perSize 逐码给出。'); amounts = { x: p.x, y: p.y }; }
+      const result = alignedMove(project, value, alignment, p.target, amounts, Boolean(p.keep)), plan = store(project, env, result.value, existing);
+      return { summary: { operation: 'grade.alignedMove', mode: p.mode, piece: result.place.piece.name, kept: Boolean(p.keep), points: result.stations, x: result.x, y: result.y, rows: plan.sizeTable.rows.length } };
+    } },
   { type: 'grade.clear', title: '删除放码', description: '删掉这张图按尺寸表放码的方案：号型、尺寸表和全部规则。基码纸样不动。排料或出图还在用它的尺码时不能删。',
     input_schema: object({}, []),
     run(project) {
@@ -133,11 +225,22 @@ export const gradingCommands = [
 ];
 
 /** What the assistant is told about the grading of the drawing (part of the scene). */
+// v69: the locked points by size and place (the lines meeting at a corner count once), the sizes kept whole
+function lockedOf(plan) {
+  const seen = new Set(), locks = [];
+  for (const lock of plan.locks || []) {
+    if (lock.layer || !lock.at) continue; const size = labelOf(plan, lock.sizeId), key = size + '|' + round(lock.at.x) + '|' + round(lock.at.y); if (seen.has(key)) continue; seen.add(key);
+    if (locks.length < 200) locks.push({ size, at: { x: round(lock.at.x), y: round(lock.at.y) }, x: round(lock.x), y: round(lock.y) });
+  }
+  return { ...(locks.length ? { locks } : {}), ...((plan.lockedSizes || []).length ? { lockedSizes: plan.lockedSizes.map(id => labelOf(plan, id)) } : {}) };
+}
 export function describeGrading(project) {
   const plan = tablePlanOf(project); if (!plan) return null;
   const sizes = sizesInOrder(plan);
   return { planId: plan.id, name: plan.name, baseSize: plan.baseSize, sizes: sizes.map(size => size.label),
     measures: plan.sizeTable.rows.slice(0, 60).map(row => ({ name: row.name, valuesCm: sizes.map(size => round(row.values[size.slot])) })),
-    rules: plan.anchors.filter(anchor => !anchor.plain).slice(0, 200).map(anchor => { const at = placeOfAnchor(project, anchor); return { entityId: anchor.entityId, ...(at ? { at: { x: round(at.x), y: round(at.y) } } : {}), x: anchor.x, y: anchor.y, ...(angleOf(anchor) ? { angleDeg: angleOf(anchor) } : {}), ...(anchor.between !== undefined ? { onLine: true } : {}) }; }),
-    ruleCount: plan.anchors.filter(anchor => !anchor.plain).length, ...(plan.lostRules ? { rulesLostToEdits: plan.lostRules } : {}) };
+    rules: plan.anchors.filter(anchor => !anchor.plain).slice(0, 200).map(anchor => { const at = placeOfAnchor(project, anchor); return { entityId: anchor.entityId, ...(at ? { at: { x: round(at.x), y: round(at.y) } } : {}), x: anchor.x, y: anchor.y, ...(angleOf(anchor) ? { angleDeg: angleOf(anchor) } : {}), ...(anchor.between !== undefined ? { onLine: true } : {}), ...(anchor.unit === 'in' ? { inches: true } : {}) }; }),
+    ruleCount: plan.anchors.filter(anchor => !anchor.plain).length, ...(plan.lostRules ? { rulesLostToEdits: plan.lostRules } : {}),
+    ...(plan.alignment ? { alignment: { mode: plan.alignment.mode, entityId: plan.alignment.entityId, at: { x: round(plan.alignment.at.x), y: round(plan.alignment.at.y) }, ...(plan.alignment.mode === 'point' && plan.alignment.axis !== 'both' ? { axis: plan.alignment.axis } : {}) } } : {}),
+    ...lockedOf(plan) };
 }
