@@ -14,7 +14,9 @@ export function readPrjCurve(bytes, offset, index = 0, { end = bytes.length, pol
     const points = [];
     for (let i = 0; i < count; i++) {
       const o = start + i * 12, x = f32(o), y = f32(o + 4), z = f32(o + 8);
-      if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 100000 || Math.abs(y) > 100000 || z !== 0) return null;
+      // v65: ET leaves leftovers of memory in the z of some extra seam lines it adds for a treated corner (延长反转角): far below
+      // anything that could be a coordinate, so they count as zero
+      if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 100000 || Math.abs(y) > 100000 || !(Math.abs(z) < 1e-9)) return null;
       points.push({ x, y });
     }
     return points.some(p => Math.abs(p.x) + Math.abs(p.y) > .001) ? points : null;
@@ -78,4 +80,22 @@ export function prjCurveStats(entities) {
     endpointNormalizedSplineCount:splines.filter(e=>e.source.spline?.normalization).length,
     maxSplineFitError:Math.max(0, ...splines.map(e => e.source.spline?.maxFitError || 0)),
   };
+}
+
+/** What an ET curve record holds after its geometry: reference lists, the seam width of a contour edge, attachments. */
+export function curveTail(bytes, offset) {
+  const record = readPrjCurve(bytes, offset); if (!record) throw new Error('曲线记录无法读取。');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), u32 = o => view.getUint32(o, true), f32 = o => view.getFloat32(o, true);
+  const flags = Array.from(bytes.subarray(offset + 7, offset + 10)); let o = record.geometryEnd;
+  const need = n => { if (o + n > bytes.length) throw new Error('曲线记录被截断。'); };
+  if (record.kind === 4) { need(4); const count = u32(o); o += 4; if (count > 10000) throw new Error('曲线显示表长度异常。'); need(count * 4); o += count * 4; }
+  const list = () => { need(4); const count = u32(o); o += 4; if (count > 1000) throw new Error('曲线引用表长度异常。'); need(count * 4); const ids = []; for (let i = 0; i < count; i++) { ids.push(u32(o)); o += 4; } return ids; };
+  const direct = list(), secondary = list(), links = list(); need(4); const width = f32(o); o += 4;
+  let width2 = null; if (flags[1] & 0x10) { need(4); width2 = f32(o); o += 4; }
+  // Bit 0x40 marks a record with a different ending (seen on notch marks); its seam width is not meaningful.
+  const special = Boolean(flags[0] & 0x40); let attribute = 0;
+  if (!special) { need(4); const attached = u32(o); o += 4; if (attached > 1000) throw new Error('曲线附着表长度异常。'); need(attached * 8 + 6); o += attached * 8; attribute = u32(o); }
+  // attribute: ET's element attribute word; 0 for an ordinary line, set for auxiliary lines and the like
+  // end: where the next record begins; not known for the records with the different ending
+  return { flags, kind: record.kind, direct, secondary, links, width, width2, special, attribute, end: special ? null : o + 6 };
 }

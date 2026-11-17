@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>搭建模型服务 · 智衣 CAD</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f4f1ea; color: #26332c; font: 16px/1.75 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 34px 0 8px; padding-top: 14px; border-top: 1px solid #d9d2c3; }
+  p, li { margin: 8px 0; }
+  code, pre { font-family: Consolas, "Courier New", monospace; background: #e9e4d8; border-radius: 4px; }
+  code { padding: 1px 5px; overflow-wrap: anywhere; }
+  pre { padding: 10px 12px; overflow-x: auto; }
+  .lead { color: #56655c; }
+  .note { background: #fff7e4; border-left: 4px solid #d38227; padding: 10px 14px; border-radius: 0 6px 6px 0; }
+  .download { display: inline-block; margin: 6px 0; padding: 10px 18px; background: #2f6f4f; color: #fff; text-decoration: none; border-radius: 6px; }
+  a { color: #2f6f8f; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 8px; border-bottom: 1px solid #d9d2c3; }
+  .table { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+<h1>搭建模型服务</h1>
+<p class="lead">让“AI 助手”听懂更自由的说法：把你的话交给大模型，由它规划画图步骤。</p>
+
+<p>助手默认用“本机指令”，不联网，只认识固定的说法。接上模型服务以后，可以用平常说话的方式下指令。模型只能提议网页已有的画图命令，计划先预演给你看，点“应用”后才改图。</p>
+<p class="note">模型服务是一个要你自己运行的小程序，模型密钥只放在它那里，网页不保存密钥。这个程序已经用模拟的模型完整测试过，还没有用真的大模型跑过；第一次接上模型后请先做第 4 步的自检。</p>
+
+<h2>1. 下载</h2>
+<p><a class="download" href="./model-service.zip" download>下载模型服务（zip）</a></p>
+<p>解压到任意文件夹。另外需要安装 <a href="https://nodejs.org/" target="_blank" rel="noopener">Node.js</a> 20 或更新的版本。</p>
+
+<h2>2. 先试连通（不需要密钥）</h2>
+<p>在解压出的文件夹里双击 <code>start-demo.cmd</code>，或在命令行运行：</p>
+<pre>node server.mjs --provider demo</pre>
+<p>看到“服务地址：http://127.0.0.1:8787”后，回到智衣 CAD：</p>
+<ol>
+<li>点“AI 助手”，再点助手面板里的“设置”。</li>
+<li>选“模型服务”，服务地址填 <code>http://127.0.0.1:8787</code>，点“测试连接”。</li>
+<li>显示“已连接”后点“保存设置”，对助手说：<code>画一个 20x10 的矩形</code>。</li>
+</ol>
+<p>演示模式只认识这一句话，用来确认网页和服务之间是通的。浏览器询问是否允许这个网站访问本机网络时，请选“允许”。</p>
+
+<h2>3. 填上模型密钥</h2>
+<p>把文件夹里的 <code>.env.example</code> 复制一份，改名为 <code>.env</code>，按里面的说明填写。</p>
+<ul>
+<li><strong>Claude：</strong>在 <code>ANTHROPIC_API_KEY=</code> 后面填密钥，并在文件夹里运行一次 <code>npm install</code>。</li>
+<li><strong>其他模型：</strong>只要服务商提供“OpenAI 兼容接口”并支持工具调用，就填接口地址、模型名称和密钥（<code>MODEL_PROVIDER=openai-compatible</code>）。</li>
+</ul>
+
+<h2>4. 自检，然后启动</h2>
+<pre>node server.mjs --check</pre>
+<p>自检会请模型画一条 10 厘米的水平线，并打印模型的回答。显示“自检通过”后，双击 <code>start.cmd</code> 或运行 <code>node server.mjs</code> 启动服务，再到助手设置里点“测试连接”和“保存设置”。</p>
+
+<h2>会发出去什么</h2>
+<ul>
+<li>发给模型的：你对助手说的话、最近几句对话、画布上裁片和线条的名称、尺寸、坐标和文字，以及网页的命令目录。纸样文件本身不发送。</li>
+<li>服务的窗口里每条指令只记一行结果，不记你说的话和画布内容。</li>
+<li>每条指令按模型服务商的标准计费。</li>
+</ul>
+
+<h2>遇到问题</h2>
+<div class="table"><table>
+<tr><th>提示</th><th>办法</th></tr>
+<tr><td>连不上模型服务</td><td>服务没有启动，或地址填错。地址是 <code>http://127.0.0.1:8787</code>，后面不要加别的。浏览器询问是否允许访问本机网络时要选“允许”。</td></tr>
+<tr><td>这个服务没有允许来自 … 的页面</td><td>把提示里的网址加到 <code>.env</code> 的 <code>ALLOWED_ORIGINS</code> 里，重新启动服务。</td></tr>
+<tr><td>模型密钥无效或没有权限</td><td>检查 <code>.env</code> 里的密钥。</td></tr>
+<tr><td>模型在限定时间内没有答完</td><td>把要求分成几句来说。</td></tr>
+</table></div>
+<p>更多设置（换模型、换端口、给别的电脑用、访问码）见压缩包里的 <code>README.md</code>。</p>
+</main>
+</body>
+</html>

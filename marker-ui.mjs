@@ -1,4 +1,4 @@
-import { emptyMarkerPlan, normalizeMarkerPlan, markerChoices, markerItem, markerTurns, markerInstanceKey, markerSourceSignature, evaluateMarkerPlan, applyMarkerPlan, exportMarkerProject, markerPoint, placedMarkerShape, markerDomain } from './marker.mjs';
+import { emptyMarkerPlan, normalizeMarkerPlan, markerChoices, markerItem, markerItemsForPieces, markerTurns, markerInstanceKey, markerSourceSignature, evaluateMarkerPlan, applyMarkerPlan, exportMarkerProject, markerPoint, placedMarkerShape, markerDomain } from './marker.mjs';
 import { polygonContainsPoint, MARKER_GRID as GRID } from './marker-polygons.mjs';
 import { toDxf } from './geometry.mjs';
 const colors=['#4d8b72','#558fa5','#b48b45','#a57499','#8b8c50','#7b7caa'];
@@ -68,6 +68,7 @@ export function createMarkerPanel({getProject,getSelection,getTool,isDark=()=>fa
       const select=$('marker-boundary');select.replaceChildren();for(const choice of choices)select.add(new Option(choice.label,choice.key));if(choices.some(c=>c.key===value))select.value=value;
       if(!choices.length)select.add(new Option(project.units==='mm'?'请先选择完整裁片或闭合边界':'请先校准工程单位',''));$('marker-add').disabled=!choices.length;
     }
+    $('marker-add-all').disabled=project.units!=='mm'||!(project.groups||[]).length;
     refreshLists();status();
   }
   $('marker-new').onclick=()=>{reset();refresh();setTool('marker');fitLayout();};
@@ -77,6 +78,23 @@ export function createMarkerPanel({getProject,getSelection,getTool,isDark=()=>fa
   $('marker-add').onclick=action(()=>{
     const choice=choices.find(c=>c.key===$('marker-boundary').value);if(!choice)throw new Error('请先选定裁剪边界');
     const next=clone(draft),added=markerItem(choice,()=>crypto.randomUUID());next.items.push(added);evaluateMarkerPlan(getProject(),next);remember();draft=next;itemId=added.id;instanceKey=markerInstanceKey(added.id,false,0);compute();refresh();fitLayout();
+  });
+  $('marker-add-all').onclick=action(()=>{
+    // Every piece with the quantities its attributes say. When whole pieces are selected, only those; a selection that holds no
+    // whole piece (the line drawn last, a text) does not count: then every piece of the drawing is taken, as the button says.
+    const project=getProject(),selection=getSelection(),everything=new Set(project.entities.map(e=>e.id)),[planId,sizeId]=$('marker-size').value?JSON.parse($('marker-size').value):[null,null],list=chosen=>markerItemsForPieces(project,chosen,()=>crypto.randomUUID(),planId,sizeId);
+    let found=selection.size?list(selection):null;const onlySelected=Boolean(found&&(found.items.length||found.skipped.length));if(!onlySelected)found=list(everything);
+    const {items,skipped}=found,same=item=>JSON.stringify([item.boundary,item.gradePlanId,item.sizeId]),have=new Set(draft.items.map(same)),next=clone(draft),added=[];
+    for(const item of items){
+      if(have.has(same(item))){skipped.push({name:item.name,reason:'已在清单里'});continue;}
+      try{evaluateMarkerPlan(project,{...next,items:[item],placements:[]});}catch(e){skipped.push({name:item.name,reason:e.message});continue;}
+      next.items.push(item);added.push(item);
+    }
+    const left=skipped.length?'没有加入 '+skipped.length+' 个：'+skipped.slice(0,6).map(s=>s.name+'（'+s.reason+'）').join('，')+(skipped.length>6?' 等':''):'';
+    if(!added.length)throw new Error(left||'图里还没有裁片');
+    evaluateMarkerPlan(project,next);remember();draft=next;itemId=added[0].id;instanceKey=markerInstanceKey(added[0].id,false,0);compute();refresh();fitLayout();
+    const total=added.reduce((sum,item)=>sum+item.quantity+item.mirroredQuantity,0),mirrored=added.reduce((sum,item)=>sum+item.mirroredQuantity,0);
+    notify('加入了'+(onlySelected?'选中的':'')+' '+added.length+' 个裁片，共 '+total+' 片'+(mirrored?'（其中镜像 '+mirrored+' 片）':'')+'，片数按裁片属性。'+(left?left+'。':''));
   });
   for(const [id,key] of fields)$(id).oninput=()=>{draft[key]=key==='name'?$(id).value:num(id);invalidate();};
   $('marker-item').onchange=()=>{itemId=$('marker-item').value;loadItem();};

@@ -1,5 +1,5 @@
 /** Annotation records decoded from ET PRJ bytes, independently of any screenshots. */
-export function parsePrjAnnotations(input) {
+export function parsePrjAnnotations(input, { afterCurves = null } = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length < 100 || bytes.length > 16 * 1024 * 1024) throw new Error('PRJ 文件大小不受支持。');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -55,10 +55,15 @@ export function parsePrjAnnotations(input) {
       break;
     }
   }
-  if (!textSection) throw new Error('PRJ 文本记录数量或结构校验未通过。');
+  // A drawing may hold no text at all, and no piece either. Nothing then marks where those sections begin, so they are
+  // located from what comes before them, and accepted only when the counts written in the file really are zero.
+  const textsFound = Boolean(textSection);
+  if (!textSection) textSection = { offset: bytes.length, endOffset: bytes.length, count: 0, texts: [] };
 
   function pieceRecord(offset) {
-    if (offset + 160 > textSection.offset || bytes[offset + 7] !== 0x20 || !zeroRange(offset + 8, 13)) return null;
+    // The byte after the colour is 0x20 on the pieces of every file seen so far, and 0xA0 on a piece ET made with its 提取裁片 tool
+    // (v59: seen in files saved by ET 2017 after that tool; what the extra bit says is not known, ET keeps it when it saves again).
+    if (offset + 160 > textSection.offset || (bytes[offset + 7] & 0x7f) !== 0x20 || !zeroRange(offset + 8, 13)) return null;
     if (u32(offset + 21) !== 1 || u32(offset + 25) !== u32(offset + 32)) return null;
     let cursor = offset + 36;
     function string() {
@@ -72,8 +77,13 @@ export function parsePrjAnnotations(input) {
     }
     try {
       const style = string(), name = string(), size = string(), material = string();
+      if (cursor + 4 > bytes.length) return null;
+      const materialCode = u32(cursor);
       cursor += 4;
       const symmetry = string();
+      if (cursor + 16 > bytes.length) return null;
+      // the number of pieces to cut, a second count that is 0 on a piece that is not symmetric, and an angle whose meaning is not known
+      const count = u32(cursor), symmetricCount = u32(cursor + 4), angle = f32(cursor + 8);
       cursor += 16;
       const labelFormat = string();
       if (cursor + 60 > bytes.length) return null;
@@ -84,7 +94,7 @@ export function parsePrjAnnotations(input) {
       if (!positions.every(point => finite([point.x, point.y]) && point.z === 0)) return null;
       if (positions[0].x !== positions[2].x || positions[0].y !== positions[2].y) return null;
       if (u32(cursor + 24) !== 0 || u32(cursor + 52) !== 0) return null;
-      return { offset, sourceId: u32(offset), style, name, size, material, symmetry, labelFormat, mode, vectorOffset: cursor, positions };
+      return { offset, sourceId: u32(offset), flag: bytes[offset + 7], style, name, size, material, materialCode, symmetry, count, symmetricCount, angle, labelFormat, mode, vectorOffset: cursor, positions };
     } catch { return null; }
   }
   const pieces = [];
@@ -95,13 +105,41 @@ export function parsePrjAnnotations(input) {
       offset = piece.vectorOffset + 55;
     }
   }
-  if (!pieces.length || u32(pieces[0].offset - 4) !== pieces.length) throw new Error('PRJ 裁片记录数量或结构校验未通过。');
-  const nodes = [];
-  for (let offset = 100; offset + 34 < pieces[0].offset; offset++) {
+  /** Where a piece record ends: its outline chains, five reference lists and a fixed block follow the grain line. */
+  function pieceEnd(piece) {
+    let cursor = piece.vectorOffset + 58;
+    const list = () => { if (cursor + 4 > bytes.length) throw new Error('truncated'); const count = u32(cursor); if (count > 100000) throw new Error('count'); cursor += 4 + count * 4; };
+    try {
+      if (cursor + 4 > bytes.length) return null;
+      const chains = u32(cursor); cursor += 4; if (chains < 1 || chains > 1000) return null;
+      for (let index = 0; index < chains; index++) { cursor += 2; list(); cursor += 4; }
+      for (let index = 0; index < 5; index++) list();
+      cursor += 112;
+      return cursor <= bytes.length ? cursor : null;
+    } catch { return null; }
+  }
+  if (pieces.length) {
+    if (u32(pieces[0].offset - 4) !== pieces.length) throw new Error('PRJ 裁片记录数量或结构校验未通过。');
+    if (!textsFound) {
+      const end = pieceEnd(pieces.at(-1));
+      if (end === null || end + 4 > bytes.length || u32(end) !== 0) throw new Error('PRJ 文本记录数量或结构校验未通过。');
+      textSection = { offset: end + 4, endOffset: end + 4, count: 0, texts: [] };
+    }
+  } else {
+    // no piece record was recognised: the count after the last line must say so
+    const pieceCountOffset = textsFound ? textSection.offset - 8 : afterCurves;
+    if (pieceCountOffset === null || pieceCountOffset < 100 || pieceCountOffset + 8 > bytes.length || (afterCurves !== null && pieceCountOffset !== afterCurves) || u32(pieceCountOffset) !== 0) throw new Error('PRJ 裁片记录数量或结构校验未通过。');
+    if (!textsFound) {
+      if (u32(pieceCountOffset + 4) !== 0) throw new Error('PRJ 文本记录数量或结构校验未通过。');
+      textSection = { offset: pieceCountOffset + 8, endOffset: pieceCountOffset + 8, count: 0, texts: [] };
+    }
+  }
+  const nodes = [], nodeBound = pieces.length ? pieces[0].offset : textSection.offset - 8;
+  for (let offset = 100; offset + 34 < nodeBound; offset++) {
     const recordType = u32(offset);
     if ((recordType !== 6 && recordType !== 7) || bytes[offset + 8] !== 0 || bytes[offset + 9] !== 0 || bytes[offset + 10] !== 255) continue;
     const x = f32(offset + 14), y = f32(offset + 18), z = f32(offset + 22);
-    if (!finite([x, y]) || z !== 0) continue;
+    if (!finite([x, y]) || !(Math.abs(z) < 1e-9)) continue;   // v65: the end nodes of ET's extra corner seam lines can carry leftover z
     nodes.push({ offset, recordType, sourceId: u32(offset + 4), x, y, ownerIndex: u32(offset + 26), flags: Array.from(bytes.subarray(offset + 11, offset + 14)) });
     offset += 33;
   }
@@ -123,7 +161,7 @@ export function parsePrjAnnotations(input) {
       declaredTextCount: textSection.count, parsedTextCount: textSection.texts.length,
       textSectionOffset: textSection.offset, textSectionEndOffset: textSection.endOffset,
       declaredPieceCount: pieces.length, parsedPieceCount: pieces.length,
-      pieceSectionOffset: pieces[0].offset, pieces,
+      pieceSectionOffset: pieces.length ? pieces[0].offset : textSection.offset - 4, pieces,
       declaredPointCount: nodes.length, parsedPointCount: nodes.length,
       pointSectionOffset: nodes[0].offset, nodes,
     },

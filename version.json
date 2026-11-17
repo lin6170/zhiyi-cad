@@ -1,8 +1,24 @@
 {
-  "version": 52,
-  "base_publication_commit": "3f2690754757bb28809ecf12badeb519a75e078e",
+  "version": 67,
+  "base_publication_commit": "5e5ec8272d49563b27216d21a1420879fd56aa99",
   "hosting": "GitHub Pages",
-  "change": "Notches and auxiliary lines: a notch tool (by distance or where the line is clicked), an auxiliary-line tool and a delete-auxiliary-lines command, four new commands and assistant phrases; notches and auxiliary lines are read from ET files of the 2.0 (08) layout and written back, and every line of an opened ET file is carried. Includes v51 (cut, stepped and fold-back seam corners) and v50 (an opened ET file becomes an editable project that is saved as a complete ET PRJ).",
-  "validation": "Node tests, 15 real-browser suites, notch records compared with the ones ET 2017 writes with its own notch tool, auxiliary lines deleted by ET 2017 with its own command, an ET 2017 round trip of a file with notches and auxiliary lines made in the browser, and two real ET patterns with 668 lines, 31 pieces, 17 treated corners and 42 notches converted, written back, opened, re-saved and refreshed by ET 2017 and compared with the originals",
-  "limits": "Notches placed by a size of the size table become fixed; dashed stitch lines along edges become plain dashed lines; the two halves of a symmetric piece are no longer linked; copying notches is missing; of ET element attributes only the auxiliary line is supported; grading rules and sizes are not carried; files of the 3.0 and 5.0 layouts must first be saved as 08 in ET; only two real patterns were compared; no model service is included and no key is shipped"
+  "includes_versions": [
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66
+  ],
+  "change": "v67: the corners of ET's 专用角处理 that v65 left. 单边直角: the seam line of one edge runs on past the corner and turns square to that edge to the other seam line (at a smooth joint: the step moved along). 曲线断差1, 2, 3: where two edges in line differ in seam width, the wider seam line runs on and a straight line or a curve leads to the narrower one (2 from the joint). 反转翻角: a turned-up cuff at both ends of the hem (A + B the hem's width, B over A, as ET requires). 开叉半止口 and 开叉全止口: the vent's seam line becomes a dashed fold with one or two layers of facing outside, the seam line above curves into the fold, the hem's seam line runs out to the facing. ET's sizes A to D. ET's own step where the seam width changes at a smooth joint (the wider part of a vent was lost on convex pieces before). Panel tool, commands and sentences of the assistant; ET files written and read with ET's records, lines, dashed folds and notches.",
+  "validation": "Node tests (70 scripts and 7 other suites), 33 real-browser suites with 1839 checks. ET 2017 used its 专用角处理 on six probe drawings; the runs of the seventeen files it saved are repeated with the commands: on straight edges within 0.02 mm for 单边直角, 曲线断差1, 反转翻角 and the vents, 0.05 mm for 曲线断差3 and 0.55 mm for 曲线断差2 (a curve ET keeps only as samples, fitted to seventeen of them); the ET file the page writes has ET's records and ET's notches. The file saved in the browser page and eight files the page wrote were opened, saved and rebuilt by ET: kept exactly, and rebuilt from the page's records within 0.02 mm (曲线断差2 0.11 mm). The comparisons of v56 to v66 with ET were made again with this code.",
+  "limits": "On a curved vent edge ET's facing bends in a way not worked out: the page lays it along the vent's chord (7 to 10 mm off). Where the square line of 单边直角 meets the other seam line far off, ET's dialog draws it as the page does, but ET's own rebuild drops it (its own file too). The curved hem fold-back of v65 stays about 5 mm off ET. Only 14 of 114 instructions were put to a model again for v67; the others rest on the answers of v60 to v66, replayed with the final code. The model was not called through the service with a key."
 }

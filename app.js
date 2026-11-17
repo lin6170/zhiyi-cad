@@ -1,6 +1,7 @@
 import { bounds, length, distance, transform, quadratic, pointOnSegment, textCorners, textWidth, validateProject, fromDxf, toDxf } from './geometry.mjs';
 import { expandGroups, entitiesInBox, selectionBounds, moveSelection, rotateSelection, mirrorSelection, duplicateSelection, deleteSelection, groupSelection, ungroupSelection } from './selection.mjs';
 import { parsePrj } from './prj-parser.mjs';
+import { baseSizeLayer } from './prj-sizes.mjs';
 import { createPrjImportDialog } from './prj-import.mjs';
 import { calibratedProject, calibrateFromReference, referenceLength } from './precision.mjs';
 import { inspectProject } from './topology.mjs';
@@ -41,13 +42,16 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=52';
+import { createCadCommands } from './cad-commands.mjs?v=67';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
-import { createConstructPanel } from './construct-ui.mjs';
+import { createConstructPanel } from './construct-ui.mjs';import { createSmartPen } from './smart-pen-ui.mjs';
 import { createPrjEditablePanel } from './prj-editable-ui.mjs';
 import { fitClampedSpline } from './fit-spline.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
+import { createViewMenu, lengthLabels, seamWidthLabels, pieceFills } from './view-options.mjs';
+import { createPieceList } from './piece-list-ui.mjs';
+import { isAamaDxf, fromAamaDxf, toAamaDxf, aamaDxfBytes } from './dxf-aama.mjs';
 const $ = id => document.getElementById(id);
 const svg = $('canvas'), drawing = $('drawing'), overlay = $('overlay');
 const ns = 'http://www.w3.org/2000/svg';
@@ -61,7 +65,7 @@ let prjExportSession = null;
 let prjEndpointSession = null;
 let prjLineSession = null;
 let recovery=null,recoverySuspended=false,recoveryFingerprint=null,recoveryHasRecord=false,projectRevision=0;
-let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null,constructPanel=null,prjEditablePanel=null;
+let pantsPanel=null,pantsSession=null,pantsSource=null,cadCommands=null,draftPanel=null,assistantPanel=null,constructPanel=null,smartPen=null,prjEditablePanel=null,viewMenu=null,pieceListPanel=null;
 let snapIndex=null,snapMatch=null,snapFailure=null,lastPointerWorld=null;
 let darkCanvas = false;
 let inspection = null, focusedInspection = null, focusedInspectionIssue = null;
@@ -187,7 +191,7 @@ function acceptConstructionPoint(p,{numeric=false}={}){
   if(result.kind==='measurement'){const m=result.measurement;$('measurement').hidden=false;$('measurement').textContent='距离 '+m.length.toFixed(3)+' '+unit()+' · ΔX '+m.dx.toFixed(2)+' · ΔY '+m.dy.toFixed(2);}
   render();
 }
-function usesSnap(){return !space&&gesture?.type!=='pan'&&(['line','polyline','curve','spline','rectangle','grain','measure','position'].includes(tool)||tool==='construct'&&Boolean(constructPanel?.wantsSnap())||gesture?.type==='node');}
+function usesSnap(){return !space&&gesture?.type!=='pan'&&(['line','polyline','curve','spline','rectangle','grain','measure','position'].includes(tool)||tool==='construct'&&Boolean(constructPanel?.wantsSnap())||tool==='smart'&&Boolean(smartPen?.wantsSnap())||gesture?.type==='node');}
 function constraintMode(){return ['perpendicular','tangent'].includes($('snap-mode').value);}
 function constraintTool(){return ['line','polyline','grain','measure'].includes(tool);}
 function snap(p,{bypass=false}={}) {
@@ -199,7 +203,10 @@ function snap(p,{bypass=false}={}) {
 }
 function hit(p) {
   let result = null, closest = 7 / camera.scale;
+  // what is switched off or hidden cannot be clicked; a locked piece only by the command tools, which refuse to change it
+  const seen = viewMenu?.view();
   for (const entity of project.entities) {
+    if (seen && !seen.pickable(entity, tool === 'construct')) continue;
     if (entity.type === 'text') {
       if (!$('show-text').checked) continue;
       const [origin, xCorner, , yCorner] = textCorners(entity);
@@ -222,6 +229,7 @@ function hit(p) {
 }
 function entityColor(entity) {
   if(entity.notchFrom&&(project.notches||[]).find(recipe=>recipe.id===entity.notchFrom)?.status!=='current')return '#e56b60';
+  if(entity.mirrorOf)return '#2e8b57';
   if(entity.derivedFrom&&(project.seamAllowances||[]).find(recipe=>recipe.id===entity.derivedFrom)?.status!=='current')return '#e56b60';
   const stored = entity.color || entity.source?.color;
   if (Array.isArray(stored) && stored.length === 3 && stored.every(value => Number.isInteger(value) && value >= 0 && value <= 255)) {
@@ -239,9 +247,12 @@ function render() {
   if(tool==='marker')markerPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
   else if(tool==='plot')plotPanel.draw({node,overlay,screen,scale:camera.scale});
   else{
+  const seen = viewMenu?.view();
+  if (viewMenu?.options.fill) for (const fill of pieceFills(project, viewMenu.options, viewMenu.hiddenPieces)) node('path', { d: pathData(fill.points, true), fill: fill.locked ? (darkCanvas ? '#8a918f38' : '#9aa39c38') : (darkCanvas ? '#7fb39a38' : '#6f9c7f38'), stroke: 'none', 'data-piece-fill': fill.groupId }, drawing);
   for (const entity of project.entities) {
+    if (seen && !seen.visible(entity)) continue;
     const active = selected.has(entity.id);
-    const color = active ? '#e3bd63' : entityColor(entity);
+    const color = active ? '#e3bd63' : seen?.locked(entity) ? (darkCanvas ? '#7c8683' : '#9aa39c') : entityColor(entity);
     if (entity.type === 'text') {
       if (!$('show-text').checked) continue;
       const origin = screen(entity.points[0]);
@@ -264,7 +275,7 @@ function render() {
       'stroke-width': active ? 2 : 1.25, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'
     };
     if (entity.source?.lineStyle === 1 || entity.lineStyle === 1) attrs['stroke-dasharray'] = '4 3';
-    if(entity.derivedFrom)attrs['stroke-dasharray']='7 3';
+    if(entity.derivedFrom)attrs['stroke-dasharray']=entity.seamRole==='extension'?'3 3':entity.seamRole==='fold'?'1 3':'7 3';if(entity.mirrorOf){attrs['stroke-dasharray']='2 3';attrs['data-mirror-image']=entity.mirrorOf;}
     node('path', attrs, drawing);
     const arrowTips = [];
     if (entity.arrowEnd) arrowTips.push([entity.points.at(-1), entity.points.at(-2)]);
@@ -276,7 +287,7 @@ function render() {
       const b = { x: end.x - size * Math.cos(angle + .35), y: end.y - size * Math.sin(angle + .35) };
       node('path', { d: 'M '+a.x+' '+a.y+' L '+end.x+' '+end.y+' L '+b.x+' '+b.y, fill: 'none', stroke: color, 'stroke-width': 1.25 }, drawing);
     }
-    if (active && selected.size === 1 && tool === 'node' && !entity.derivedFrom && !entity.notchFrom) {
+    if (active && selected.size === 1 && tool === 'node' && !entity.derivedFrom && !entity.notchFrom && !entity.mirrorOf) {
       const points=entity.curve?.controlPoints || entity.points;
       if(entity.curve) node('path',{d:pathData(points),fill:'none',stroke:'#69b9c8','stroke-width':1,'stroke-dasharray':'4 4','data-control-polygon':entity.id},overlay);
       points.forEach((p,index)=>{
@@ -284,6 +295,16 @@ function render() {
         node('circle',{cx:s.x,cy:s.y,r:4.5,fill:entity.id===controlEntityId&&index===controlIndex?'#69b9c8':'#fff',stroke:'#c48b37','stroke-width':1.5,'data-control-index':index},overlay);
       });
     }
+  }
+  if (seen && viewMenu.options.axes) {
+    const origin = screen({ x: 0, y: 0 }), ink = darkCanvas ? '#9fb0aa' : '#7a8a82';
+    node('path', { d: 'M ' + origin.x + ' ' + origin.y + ' h 60 m -7 -4 l 7 4 l -7 4 M ' + origin.x + ' ' + origin.y + ' v -60 m -4 7 l 4 -7 l 4 7', fill: 'none', stroke: ink, 'stroke-width': 1.25, 'data-view-axes': 'true' }, overlay);
+    for (const [text, dx, dy] of [['X', 66, 4], ['Y', -4, -66], ['0', -10, 14]]) node('text', { x: origin.x + dx, y: origin.y + dy, fill: ink, 'font-size': 11, 'data-view-axes': 'label' }, overlay).textContent = text;
+  }
+  if (seen && (viewMenu.options.lengths || viewMenu.options.seamWidths)) {
+    const tag = (label, kind, ink, lift) => { const q = screen(label.at); node('text', { x: q.x, y: q.y - lift, fill: ink, 'font-size': 11, 'text-anchor': 'middle', 'paint-order': 'stroke', stroke: darkCanvas ? '#252a2b' : '#f6f7f3', 'stroke-width': 3, 'data-view-label': kind, 'data-entity': label.entityId }, overlay).textContent = label.text; };
+    if (viewMenu.options.lengths) for (const label of lengthLabels(project, seen)) tag(label, 'length', darkCanvas ? '#cfd8d3' : '#3f5248', 4);
+    if (viewMenu.options.seamWidths) for (const label of seamWidthLabels(project, seen)) tag(label, 'seam-width', darkCanvas ? '#eea358' : '#a35f24', -13);
   }
   if (selected.size > 1) {
     const box = selectionBounds(project, selected);
@@ -350,7 +371,7 @@ function render() {
   if(!gesture?.changed)lineEditPanel.draw({node,overlay,screen,pathData});
   if(!gesture?.changed)trimPanel.draw({node,overlay,screen,pathData});
   if(!gesture?.changed)extendPanel.draw({node,overlay,screen,pathData});
-  if(!gesture?.changed)constructPanel?.draw({node,overlay,screen,pathData});
+  if(!gesture?.changed)constructPanel?.draw({node,overlay,screen,pathData});if(!gesture?.changed)smartPen?.draw({node,overlay,screen,pathData});
   if(!gesture?.changed)positionPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
   if(!gesture?.changed)spreadPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
   if(!gesture?.changed)dartPanel.draw({node,overlay,screen,pathData,scale:camera.scale});
@@ -400,7 +421,7 @@ function refresh() {
   lineEditPanel.refresh();
   trimPanel.refresh();
   extendPanel.refresh();
-  constructPanel?.refresh();
+  constructPanel?.refresh();smartPen?.refresh();viewMenu?.refresh();pieceListPanel?.refresh();
   positionPanel.refresh();
   spreadPanel.refresh();
   dartPanel.refresh();
@@ -457,6 +478,7 @@ function refresh() {
   $('group').disabled = selected.size < 2 || Boolean(activeGroup);
   $('ungroup').disabled = !(project.groups || []).some(group => group.entityIds.some(id => selected.has(id)));
   $('rename-group').disabled = !activeGroup;
+  const memberPick = memberSelection(); $('group-add').disabled = !memberPick.add; $('group-remove').disabled = !memberPick.remove;
   $('group-name').value = activeGroup?.name || '';
   $('group-source').hidden = !activeGroup?.source?.offset;
   if (activeGroup?.source?.offset) {
@@ -674,8 +696,8 @@ function refreshNotchPanel(){
 function notchOptions(){return {mode:$('notch-mode').value,position:number('notch-position'),side:number('notch-side'),count:number('notch-count'),spacing:number('notch-spacing'),depth:number('notch-depth'),shape:$('notch-shape').value,width:number('notch-width'),targetSeamId:$('notch-target').value||null};}
 function refreshControlEditor() {
   const entity=selectedEntity();
-  $('control-editor').hidden=!entity||entity.type==='text'||Boolean(entity.derivedFrom||entity.notchFrom);
-  if(!entity||entity.type==='text'||entity.derivedFrom||entity.notchFrom)return;
+  $('control-editor').hidden=!entity||entity.type==='text'||Boolean(entity.derivedFrom||entity.notchFrom||entity.mirrorOf);
+  if(!entity||entity.type==='text'||entity.derivedFrom||entity.notchFrom||entity.mirrorOf)return;
   const points=entity.curve?.controlPoints||entity.points;
   if(controlEntityId!==entity.id){controlEntityId=entity.id;controlIndex=0;}
   controlIndex=Math.min(controlIndex,points.length-1);
@@ -734,7 +756,7 @@ const hints = {
   merge: '分别记录两片 · 选择等长直线接边 · 预览第二片对齐位置 · 应用'
 };
 function setTool(value) {
-  if(tool==='marker'&&value!=='marker')markerPanel.end(true);
+  if(tool==='marker'&&value!=='marker')markerPanel.end(true);if(tool==='smart'&&value!=='smart')smartPen?.cancel();
   tool = value; draft = [];snapMatch=null;snapFailure=null;
   constructionInput.reset();
   for(const option of $('snap-mode').options)if(['perpendicular','tangent'].includes(option.value))option.disabled=!constraintTool();
@@ -748,7 +770,7 @@ function setTool(value) {
   $('line-edit-tool').classList.toggle('active',tool==='line-edit');
   $('trim-tool').classList.toggle('active',tool==='trim');
   $('extend-tool').classList.toggle('active',tool==='extend');
-  $('construct-tool').classList.toggle('active',tool==='construct');
+  $('construct-tool').classList.toggle('active',tool==='construct');$('smart-tool').classList.toggle('active',tool==='smart');
   $('position-tool').classList.toggle('active',tool==='position');
   $('spread-tool').classList.toggle('active',tool==='spread');
   $('dart-tool').classList.toggle('active',tool==='dart');
@@ -756,10 +778,11 @@ function setTool(value) {
   $('split-tool').classList.toggle('active',tool==='split');
   $('merge-tool').classList.toggle('active',tool==='merge');
   $('tool-hint').textContent = hints[tool];
-  svg.style.cursor = ['select','node'].includes(tool) ? 'default' : 'crosshair'; render();constructionInput.reveal();constructPanel?.refresh();
+  svg.style.cursor = ['select','node'].includes(tool) ? 'default' : 'crosshair'; render();constructionInput.reveal();constructPanel?.refresh();smartPen?.refresh();
   if(tool==='notch'){refreshNotchPanel();$('notch-panel').scrollIntoView({block:'center'});}
 }
 document.querySelectorAll('[data-tool]').forEach(button => button.onclick = () => setTool(button.dataset.tool));
+let constructDrag=null;
 svg.addEventListener('pointerdown', event => {
   if (event.button !== 0 && event.button !== 1) return;
   event.preventDefault(); svg.focus(); svg.setPointerCapture(event.pointerId);
@@ -779,11 +802,12 @@ svg.addEventListener('pointerdown', event => {
   if(tool==='line-edit'){const target=hit(p);if(target)lineEditPanel.pick(target.entity);else notify('请点选原始线条');return;}
   if(tool==='trim'){trimPanel.pick(hit(p)?.entity,p,8/camera.scale);return;}
   if(tool==='extend'){extendPanel.pick(hit(p)?.entity,p,8/camera.scale);return;}
-  if(tool==='construct'){constructPanel.pick({point:pointer,raw:p,entity:hit(p)?.entity||null});return;}
+  if(tool==='smart'){smartPen.down({point:pointer,raw:p,entity:hit(p)?.entity||null,event});render();return;}
+  if(tool==='construct'){constructPanel.pick({point:pointer,raw:p,entity:hit(p)?.entity||null});constructDrag=constructPanel.dragWanted()?{x:event.clientX,y:event.clientY}:null;return;}
   if(tool==='spline'){splinePoint(pointer);return;}
   if (tool === 'node' && selectedEntity()?.type !== 'text' && selectedEntity()) {
     const entity = selectedEntity();
-    const index = (entity.derivedFrom||entity.notchFrom?[]:entity.curve?.controlPoints||entity.points).findIndex(point => distance(point, p) < 8 / camera.scale);
+    const index = (entity.derivedFrom||entity.notchFrom||entity.mirrorOf?[]:entity.curve?.controlPoints||entity.points).findIndex(point => distance(point, p) < 8 / camera.scale);
     if (index >= 0) { controlEntityId=entity.id;controlIndex=index;refreshControlEditor();gesture = { type: 'node', index, entity, before: structuredClone(entity), start: p,snapExcludeIds:new Set(project.entities.filter(e=>e.id===entity.id||e.derivedFrom||e.notchFrom).map(e=>e.id)) }; render();return; }
   }
   if (tool === 'select' || tool === 'node') {
@@ -830,9 +854,10 @@ svg.addEventListener('pointermove', event => {
     camera.y = gesture.camera.y + event.clientY - gesture.start.y;
   } else if(tool==='marker'){markerPanel.move(p);return;}
   else if(tool==='plot')return;
+  else if(tool==='smart'){smartPen.move({point:pointer,raw:p,event});}
   else if (gesture?.type === 'box') {
     gesture.current = p;
-    const visible = project.entities.filter(entity => entity.type !== 'text' || $('show-text').checked);
+    const seen = viewMenu?.view(), visible = project.entities.filter(entity => (entity.type !== 'text' || $('show-text').checked) && (!seen || seen.pickable(entity)));
     let matches = entitiesInBox(visible, gesture.start, p, p.x < gesture.start.x);
     if ($('whole-group').checked) matches = expandGroups(project, matches);
     selected = new Set([...gesture.base, ...matches]);
@@ -867,8 +892,11 @@ function cancelGesture() {
   } else if (gesture?.type === 'box') selected = gesture.base;
   gesture = null; refresh();
 }
+// In the drafting panel a curve point or a line end can be dragged: pressing picks it, letting go somewhere else gives its new place.
+svg.addEventListener('pointerup',event=>{const start=constructDrag;constructDrag=null;if(!start||tool!=='construct'||Math.hypot(event.clientX-start.x,event.clientY-start.y)<6)return;const p=world(event);pointer=snap(p,{bypass:event.altKey||space});if(snapFailure){notify('吸附未完成，未记录此点。请放大、切换模式或按 Alt 临时关闭。');render();return;}constructPanel.pick({point:pointer,raw:p,entity:null});});
+svg.addEventListener('pointerup',event=>{if(tool==='smart'&&event.button===0&&!gesture)smartPen.up({raw:world(event)});});
 svg.addEventListener('pointerup', endGesture); svg.addEventListener('pointercancel', cancelGesture);
-svg.addEventListener('contextmenu',event=>{if(tool==='spline'){event.preventDefault();finishSpline();}});
+svg.addEventListener('contextmenu',event=>{if(tool==='spline'){event.preventDefault();finishSpline();}if(tool==='smart'){event.preventDefault();smartPen.context({entity:hit(world(event))?.entity||null});}});
 svg.addEventListener('dblclick',event=>{if(tool==='spline'){event.preventDefault();finishSpline();}});
 svg.addEventListener('wheel', event => {
   event.preventDefault(); const r = svg.getBoundingClientRect();
@@ -942,6 +970,21 @@ function makeGroup() {
   editSelection(()=>groupSelection(project,selected,name,()=>crypto.randomUUID()));
 }
 $('group').onclick=makeGroup;
+// Lines and texts drawn inside a piece after it was made: a whole piece selected together with loose lines can take them in;
+// lines picked inside one piece (Alt and click) can be taken out. Both go through the command set, so they can be undone.
+function memberSelection() {
+  const owner = new Map((project.groups || []).flatMap(group => group.entityIds.map(id => [id, group]))), ids = [...selected];
+  const loose = ids.filter(id => !owner.has(id)), owners = [...new Set(ids.filter(id => owner.has(id)).map(id => owner.get(id)))];
+  const whole = owners.length === 1 && owners[0].entityIds.every(id => selected.has(id));
+  return { add: whole && loose.length ? { groupId: owners[0].id, entityIds: loose } : null, remove: owners.length === 1 && !loose.length && !whole ? { groupId: owners[0].id, entityIds: ids } : null };
+}
+function changeMembers(adding) {
+  const pick = memberSelection()[adding ? 'add' : 'remove']; if (!pick) return;
+  const name = project.groups.find(group => group.id === pick.groupId).name;
+  try { cadCommands.execute({ schema: 'zhiyi-cad-command/v1', type: adding ? 'piece.addMembers' : 'piece.removeMembers', expectedRevision: cadCommands.read().revision, parameters: pick }); refresh(); notify((adding ? '已加入“' : '已移出“') + name + '”：' + pick.entityIds.length + ' 个'); }
+  catch (error) { notify(error.message); }
+}
+$('group-add').onclick=()=>changeMembers(true);$('group-remove').onclick=()=>changeMembers(false);
 $('ungroup').onclick=()=>editSelection(()=>ungroupSelection(project,selected));
 $('rename-group').onclick=()=>{
   const group=selectedGroup(),name=$('group-name').value.trim();
@@ -1096,6 +1139,13 @@ function save() {
   dirty=false;refresh();
 }
 $('save').onclick=save;
+// Pieces only, in the form other garment CAD systems and cutting rooms read (and ET opens with 打开DXF文件). Saved in GBK, as ET saves it.
+$('export-aama').onclick=action(()=>{
+  const result=toAamaDxf(project);let bytes;
+  try{bytes=aamaDxfBytes(result.text);}catch(error){throw new Error('裁片名称或文字里有 GBK 编码之外的字符，ET 读不了：'+error.message);}
+  download(bytes,project.name+'-裁片.dxf','application/dxf');
+  notify('已导出裁片 DXF：'+result.report.pieces.length+' 个裁片'+(result.report.looseEntitiesLeftOut?'；不属于裁片的 '+result.report.looseEntitiesLeftOut+' 个图元没有写入':'')+(result.report.skipped.length?'；'+result.report.skipped.length+' 个裁片轮廓不完整，没有写入':'')+'。');
+});
 $('export').onclick=action(()=>{
   const options=dxfSettings.options();download(toDxf(project,options),project.name+'.dxf','application/dxf');
   notify('已导出当前基码 DXF · '+(options.curveMode==='native'?'保留原生样条':'折线采样偏差 '+options.tolerance+' mm')+'。各尺码在放码面板导出；不含服装关联规则。');
@@ -1149,11 +1199,12 @@ async function openFile(file) {
   document.querySelector('main').inert = true;
   $('new').disabled = true;
   try {
-    let value,sourceSession=null,endpointSession=null,lineSession=null,rawSource=null;
+    let value,sourceSession=null,endpointSession=null,lineSession=null,rawSource=null,aamaNote='';
     if(/\.prj$/i.test(file.name)){
-      const sourceBytes=new Uint8Array(await file.arrayBuffer());
+      // a file ET saved with one layer per size is worked on as its base size; the other sizes come from its grading rules
+      const fileBytes=new Uint8Array(await file.arrayBuffer()),sourceBytes=baseSizeLayer(fileBytes).bytes;
       rawSource={bytes:sourceBytes,filename:file.name};
-      const parsed=await prjImport.choose(parsePrj(sourceBytes,file.name));
+      const parsed=await prjImport.choose(parsePrj(fileBytes,file.name));
       if(!parsed){notify('已取消 PRJ 导入');return;}
       value={...emptyProject(),...parsed,units:'unknown'};
       try{sourceSession=createPrjTextExportSession(sourceBytes,file.name);}catch{sourceSession=null;}
@@ -1161,11 +1212,19 @@ async function openFile(file) {
       try{lineSession=createPrjLineExportSession(sourceBytes,file.name);}catch{lineSession=null;}
       darkCanvas = true; $('grid').checked = false; $('show-text').checked = true;
     } else if(/\.dxf$/i.test(file.name)){
-      const decoded=decodeDxfBytes(await file.arrayBuffer());value={...emptyProject(),...fromDxf(decoded.text),name:file.name.replace(/\.dxf$/i,'')};
-      value.metadata.sourceFile=file.name;value.metadata.dxfImport.encoding=decoded.encoding;
+      const decoded=decodeDxfBytes(await file.arrayBuffer());
+      if(isAamaDxf(decoded.text)){
+        // A piece file (AAMA): its blocks become pieces with their outline edges, seam allowance, notches, grain line and attributes.
+        const result=fromAamaDxf(decoded.text,{name:file.name.replace(/\.dxf$/i,'')});value=result.project;value.metadata.sourceFile=file.name;
+        const kept=result.report.pieces.filter(p=>p.cutLineKept).length;
+        aamaNote='裁片 DXF：'+result.report.pieces.length+' 个裁片'+(result.report.notches?'，'+result.report.notches+' 个刀口':'')+(result.report.drillHoles?'，'+result.report.drillHoles+' 个打孔':'')+(kept?'；有 '+kept+' 个裁片的缝份宽度对不上，裁剪线按普通线保留':'')+(result.report.skipped.length?'；有 '+result.report.skipped.length+' 个块没有读出':'');
+      }else{
+        value={...emptyProject(),...fromDxf(decoded.text),name:file.name.replace(/\.dxf$/i,'')};
+        value.metadata.sourceFile=file.name;value.metadata.dxfImport.encoding=decoded.encoding;
+      }
     } else value=validateProject(JSON.parse(await file.text()));
     validateProject(value);loadProject(value,sourceSession,endpointSession,lineSession,rawSource);
-    notify('已打开 '+file.name+' · '+value.entities.length+' 个图元'+(value.warnings?.length?' · 请查看导入报告':''));
+    notify(aamaNote||('已打开 '+file.name+' · '+value.entities.length+' 个图元'+(value.warnings?.length?' · 请查看导入报告':'')));
   } catch(error) { notify('导入失败：'+error.message); }
   finally { importPending = false; document.querySelector('main').inert = false; $('new').disabled = false; }
 }
@@ -1199,6 +1258,7 @@ window.addEventListener('keydown',event=>{
   if(tableEditor.isOpen())return;
   if($('dxf-settings').open)return;
   if(['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName))return;
+  if(tool==='smart'&&smartPen?.key(event)){event.preventDefault();return;}
   if(tool==='plot'&&(['Delete','Backspace'].includes(event.key)||(event.ctrlKey||event.metaKey)&&['a','g'].includes(event.key.toLowerCase()))){event.preventDefault();return;}
   if(tool==='marker'){
     if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();markerPanel.unplace();return;}
@@ -1206,7 +1266,7 @@ window.addEventListener('keydown',event=>{
   }
   if(event.ctrlKey||event.metaKey){
     if(gesture){event.preventDefault();cancelGesture();return;}
-    if(event.key.toLowerCase()==='a'){event.preventDefault();selected=new Set(project.entities.filter(entity=>entity.type!=='text'||$('show-text').checked).map(entity=>entity.id));if($('whole-group').checked)selected=expandGroups(project,selected);refresh();}
+    if(event.key.toLowerCase()==='a'){event.preventDefault();const seen=viewMenu?.view();selected=new Set(project.entities.filter(entity=>(entity.type!=='text'||$('show-text').checked)&&(!seen||seen.pickable(entity))).map(entity=>entity.id));if($('whole-group').checked)selected=new Set([...expandGroups(project,selected)].filter(id=>{const entity=project.entities.find(e=>e.id===id);return entity&&(!seen||seen.pickable(entity));}));refresh();}
     if(event.key.toLowerCase()==='g'){event.preventDefault();event.shiftKey?$('ungroup').click():makeGroup();}
     if(event.key.toLowerCase()==='s'){event.preventDefault();save();}
     if(event.key.toLowerCase()==='z'){event.preventDefault();event.shiftKey?redo():undo();}
@@ -1220,6 +1280,7 @@ window.addEventListener('keydown',event=>{
   if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();remove();}
   const keys={v:'select',n:'node',l:'line',p:'polyline',c:'curve',s:'spline',r:'rectangle',m:'measure',g:'grain'};
   if(keys[event.key.toLowerCase()])setTool(keys[event.key.toLowerCase()]);
+  if(event.key==='`'||event.key==='~')$('smart-tool').click();
   if(event.key.toLowerCase()==='f')fit();
 });
 window.addEventListener('keyup',event=>{if(event.code==='Space'){space=false;svg.style.cursor='default';}});
@@ -1229,7 +1290,7 @@ window.addEventListener('pagehide',flushRecovery);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushRecovery();});
 window.addEventListener('beforeunload',event=>{if(hasUnsavedWork()){event.preventDefault();event.returnValue='';}});
 cadCommands=createCadCommands({getProject:()=>project,getRevision:()=>projectRevision,
-  canExecute:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&!prjSavePanel.isOpen()&&!prjLinePanel.isOpen()&&!prjNewPanel.isOpen()&&!prjEndpointPanel.isOpen()&&!prjWritebackPanel.isOpen()&&['select','node','construct'].includes(tool),
+  canExecute:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&!prjSavePanel.isOpen()&&!prjLinePanel.isOpen()&&!prjNewPanel.isOpen()&&!prjEndpointPanel.isOpen()&&!prjWritebackPanel.isOpen()&&['select','node','construct','smart'].includes(tool),
   commit:(next,ids)=>{checkpoint();project=next;selected=new Set(ids);finishEdit();},
   undo,redo,history:()=>({canUndo:Boolean(undoStack.length),canRedo:Boolean(redoStack.length)}),getPantsSession:()=>pantsSession});
 Object.defineProperty(window,'zhiyiCAD',{value:cadCommands,writable:false,configurable:false});
@@ -1240,6 +1301,17 @@ assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),ge
   prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>refresh(),
   hostActions:{'view.fit':()=>{refresh();fit();},'file.savePrj':()=>{refresh();fit();prjNewPanel.open();},'file.exportDxf':()=>{$('export').click();},'file.saveProject':()=>{save();}}});
 constructPanel=createConstructPanel({commands:cadCommands,host:$('workspace'),getProject:()=>project,getSelection:()=>selected,getTool:()=>tool,setTool,render,notify});
+smartPen=createSmartPen({commands:cadCommands,host:$('workspace'),getProject:()=>project,getTool:()=>tool,setTool,render,notify,editPoints:id=>{selected=new Set([id]);setTool('node');refresh();},isVisible:entity=>{const seen=viewMenu?.view();return !seen||seen.pickable(entity);}});
+$('smart-tool').onclick=()=>{if(!importPending&&!gesture&&!draft.length)smartPen.begin();else notify('请先完成或取消当前编辑。');};
+// Display switches and the piece list. What is hidden or locked drops out of the selection, so no tool can act on it unseen.
+const applyChrome=()=>{document.querySelector('aside.tools').hidden=!viewMenu.options.toolbar;document.querySelector('footer.statusbar').hidden=!viewMenu.options.statusbar;};
+viewMenu=createViewMenu({host:document.querySelector('.command-bar'),getProject:()=>project,getSelection:()=>[...selected],notify,
+  onChange:()=>{const seen=viewMenu.view();selected=new Set([...selected].filter(id=>{const entity=project.entities.find(e=>e.id===id);return entity&&seen.pickable(entity,tool==='construct');}));applyChrome();refresh();}});
+$('theme').before(viewMenu.element);applyChrome();
+pieceListPanel=createPieceList({host:document.body,commands:cadCommands,getProject:()=>project,view:viewMenu,notify,refresh:()=>refresh(),
+  selectPiece:id=>{const group=(project.groups||[]).find(g=>g.id===id);if(!group||group.locked||viewMenu.hiddenPieces.has(id))return;if(!['select','node'].includes(tool))setTool('select');selected=new Set(group.entityIds);refresh();}});
+const pieceListEntry=document.createElement('button');pieceListEntry.id='piece-list-open';pieceListEntry.textContent='裁片清单';pieceListEntry.title='每个裁片的面积、周长和缝份；隐藏、锁定裁片；导出表格';pieceListEntry.setAttribute('aria-haspopup','dialog');
+pieceListEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length)pieceListPanel.open();else notify('请先完成或取消当前编辑。');};$('theme').before(pieceListEntry);
 // An opened ET file is a read-only view; this offers to turn it into an editable millimetre project.
 prjEditablePanel=createPrjEditablePanel({host:$('workspace'),getProject:()=>project,getSource:()=>pantsSource,canReplace,load:value=>loadProject(validateProject(value)),notify});
 $('construct-tool').onclick=()=>{if(!importPending&&!gesture&&!draft.length)constructPanel.begin();else notify('请先完成或取消当前编辑。');};

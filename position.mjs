@@ -4,7 +4,7 @@ import { assertIndependentTransform, syncAllowances } from './seams.mjs';
 import { syncNotches } from './notches.mjs';
 import { syncSeamChecks } from './seam-checks.mjs';
 import { syncGradingPlans } from './grading.mjs';
-import { prepareGradeVectorTransform } from './grading-schema.mjs';
+import { prepareGradeVectorTransform, transformTableGrading } from './grading-schema.mjs';
 import { syncMarkerPlans } from './marker.mjs';
 import { transformMarkerGrains } from './transform-links.mjs';
 import {degreeSinCos} from './angles.mjs';
@@ -71,7 +71,7 @@ export function preparePosition(project,value,makeId){
   const commitGradeVectors=prepareGradeVectorTransform(next,selected,p=>positionVector(matrix,p));
   for(const entity of next.entities)if(selected.has(entity.id))transformEntity(entity,matrix);
   if(matrix.mirrored)for(const notch of next.notches||[])if(selected.has(notch.baseEntityId))notch.side*=-1;
-  commitGradeVectors();
+  commitGradeVectors();transformTableGrading(next,selected,p=>positionVector(matrix,p),p=>positionPoint(matrix,p));
   const grains=transformMarkerGrains(next,selected,p=>positionVector(matrix,p));
   validateProject(next);syncAllowances(next,makeId);syncNotches(next,makeId);syncSeamChecks(next);syncGradingPlans(next);syncMarkerPlans(next);
   const report=recipeIssues(next,selected),remaining=new Set(next.entities.map(entity=>entity.id)),selectionIds=[...selected].filter(id=>remaining.has(id));

@@ -65,13 +65,17 @@ function entityGraphics(entity,reference,config){
   let bounds=spans?spans.map(plotBezierBounds).reduce(mergeBounds):pointsBounds(points);for(const arrow of arrows)bounds=mergeBounds(bounds,pointsBounds(arrow));
   return {...base,type:'path',points,spans,closed:entity.closed,arrows,bounds};
 }
+const PAGE_LIMIT=5000,ROLL_LIMIT=100000;   // mm
 export function preparePlot(project,value){
   const config=normalizePlotSettings(value),source=resolvePlotSource(project,config),first=source.entities[0],reference={...(first.curve?.controlPoints[0]||first.points[0])};
   const graphics=source.entities.map(e=>entityGraphics(e,reference,config)),raw=graphics.map(g=>g.bounds).reduce(mergeBounds),pad=config.lineWidth/2+.001;
   const box={minX:raw.minX-pad,minY:raw.minY-pad,maxX:raw.maxX+pad,maxY:raw.maxY+pad};box.width=box.maxX-box.minX;box.height=box.maxY-box.minY;
   let [paperWidth,paperHeight]=config.paper==='custom'?[config.customWidth,config.customHeight]:plotPapers[config.paper];if(config.orientation==='landscape')[paperWidth,paperHeight]=[paperHeight,paperWidth];
   if(config.mode==='full'){paperWidth=config.rollWidth;paperHeight=Math.max(config.calibration?170+2*config.margin:150,Math.ceil((box.height+2*config.margin+HEADER+FOOTER)*1000)/1000);}
-  if(paperWidth>5000||paperHeight>5000)throw new Error('单页超过 5000 mm，请改用分页拼接');
+  // A roll is as long as what is drawn on it: the marker of a real style runs to six or seven metres, and a plotter takes the whole
+  // length (until v55 a roll was refused beyond 5 m, so such a marker could not be written as a PLT at all). A page for printing
+  // stays within 5 m; plotPrintHtml refuses a longer roll and says what to use instead.
+  if(paperWidth>PAGE_LIMIT||paperHeight>(config.mode==='full'?ROLL_LIMIT:PAGE_LIMIT))throw new Error(config.mode==='full'&&paperWidth<=PAGE_LIMIT?'整幅长度超过 100 m，请分批出图':'单页超过 5000 mm，请改用分页拼接');
   const contentWidth=paperWidth-2*config.margin,contentHeight=paperHeight-2*config.margin-HEADER-FOOTER;
   if(contentWidth<20||contentHeight<20)throw new Error('纸张扣除边距和标题后不足 20 mm');
   if(config.mode==='full'&&box.width>contentWidth+1e-9)throw new Error('整幅宽度不足，请加宽纸卷、旋转图形或改用分页');
@@ -143,6 +147,7 @@ export function wholePlotSvg(plot){
 }
 export function plotReport(plot){return {format:'zhiyi-plot-report',version:1,name:plot.source.name,scale:1,units:'mm',settings:plot.config,sourceReference:plot.reference,rotatedBounds:plot.box,entityCount:plot.graphics.length,nativeCurveCount:plot.graphics.filter(g=>g.spans).length,textCount:plot.graphics.filter(g=>g.type==='text').length,paper:{width:plot.paperWidth,height:plot.paperHeight,contentWidth:plot.contentWidth,contentHeight:plot.contentHeight},rows:plot.rows,cols:plot.cols,pages:plot.pages.map(p=>({...p,marks:plotRegistrationMarks(plot,p)})),warnings:plot.source.warnings,instructions:['打印比例选择 100% 或实际大小，关闭适合页面和页眉页脚。','裁去后一页内容框左/上方空白边，叠放重叠区域并对齐相同位置的十字。','校准页 100 mm 方框需在 X/Y 两方向量测；纸张和打印机驱动可能重新缩放。','矢量输出使用当前控制点转换的 Bezier 段；文字采用本机字体，不保证与 ET 字形一致。']};}
 export function plotPrintHtml(plot){
+  if(plot.paperWidth>PAGE_LIMIT||plot.paperHeight>PAGE_LIMIT)throw new Error('整幅长 '+(plot.paperHeight/1000).toFixed(2)+' m，超过打印一页 5000 mm 的上限。请输出 PLT 给绘图仪，或保存 SVG；要打印就改用分页拼接。');
   const width=fmt(plot.paperWidth),height=fmt(plot.paperHeight),report=plotReport(plot),drawingPages=plot.pages.filter(p=>p.kind==='drawing'),calibrationPage=plot.pages.find(p=>p.kind==='calibration');
   let html='<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+escapePlotText(plot.source.name)+' · 1:1 打印</title><style>@page{size:'+width+'mm '+height+'mm;margin:0}*{box-sizing:border-box}body{margin:0;background:#e8ece7;font-family:Arial,"Microsoft YaHei",sans-serif;color:#24392c}aside{max-width:900px;padding:24px;margin:auto;line-height:1.8}button{padding:10px 16px;border:0;border-radius:5px;background:#2e674d;color:white;font:inherit;cursor:pointer}.sheet{width:'+width+'mm;height:'+height+'mm;margin:14px auto;background:white;box-shadow:0 3px 16px #0002;break-after:page;page-break-after:always;break-inside:avoid;overflow:hidden}.sheet:last-child{break-after:auto;page-break-after:auto}.sheet>svg{display:block;width:100%;height:100%}@media print{html,body{margin:0;padding:0;background:white}aside{display:none}.sheet{margin:0;box-shadow:none}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><aside><h1>1:1 纸样出图</h1><p>'+escapePlotText(plot.source.name)+' · '+plot.pages.length+' 页 · '+width+' × '+height+' mm</p><ol>'+report.instructions.map(t=>'<li>'+escapePlotText(t)+'</li>').join('')+'</ol><p>这是生成时的静态快照。修改纸样后，请重新生成打印文件。</p><button id="print-dialog">打印 / 保存为 PDF</button><p id="print-note">正在准备字体…</p></aside>';
   const navigation='<p>共 '+plot.pages.length+' 页：纸样 '+drawingPages.length+' 页'+(calibrationPage?' + 校准 1 页。第一页仅用于比例校准，不含纸样。':'。')+'</p><nav aria-label="打印文件页面导航"><a href="#print-page-'+drawingPages[0].number+'">查看纸样（共 '+drawingPages.length+' 页）</a>'+(calibrationPage?' · <a href="#print-page-'+calibrationPage.number+'">查看比例校准页</a>':'')+'</nav>';

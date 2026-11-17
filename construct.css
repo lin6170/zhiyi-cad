@@ -29,3 +29,4 @@
 .construct-actions button{padding:7px 12px}
 #construct-tool.active,[data-tool=spline].active{background:#e3eee6}
 .dark-canvas .construct-panel{box-shadow:0 10px 30px #0008}
+.construct-status{white-space:pre-line}

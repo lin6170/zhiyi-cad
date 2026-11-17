@@ -1,7 +1,7 @@
 import { bounds, textCorners, transform } from './geometry.mjs';
 import { contoursForGroup } from './topology.mjs';
 import { assertIndependentTransform } from './seams.mjs';
-import { transformGradeVectors, prepareGradeVectorTransform } from './grading-schema.mjs';
+import { transformGradeVectors, prepareGradeVectorTransform, transformTableGrading } from './grading-schema.mjs';
 import { transformMarkerGrains } from './transform-links.mjs';
 
 export function expandGroups(project, ids) {
@@ -66,6 +66,7 @@ export function moveSelection(project, ids, dx, dy) {
   for (const entity of project.entities) if (ids.has(entity.id)) {
     transform(entity, point => ({ x: point.x + dx, y: point.y + dy }));
   }
+  transformTableGrading(project,ids,p=>p,p=>({x:p.x+dx,y:p.y+dy}));
 }
 
 export function rotateSelection(project, ids, degrees, center = null) {
@@ -82,6 +83,7 @@ export function rotateSelection(project, ids, degrees, center = null) {
     }));
   }
   commitGradeVectors();
+  transformTableGrading(project,ids,p=>({x:p.x*cosine-p.y*sine,y:p.x*sine+p.y*cosine}),p=>({x:cx+(p.x-cx)*cosine-(p.y-cy)*sine,y:cy+(p.x-cx)*sine+(p.y-cy)*cosine}));
   transformMarkerGrains(project,ids,p=>({x:p.x*cosine-p.y*sine,y:p.x*sine+p.y*cosine}));
 }
 
@@ -94,6 +96,7 @@ export function mirrorSelection(project, ids) {
   }
   for(const recipe of project.notches||[])if(ids.has(recipe.baseEntityId))recipe.side*=-1;
   transformGradeVectors(project,ids,p=>({x:-p.x,y:p.y}));
+  transformTableGrading(project,ids,p=>({x:-p.x,y:p.y}),p=>({x:box.minX+box.maxX-p.x,y:p.y}));
   transformMarkerGrains(project,ids,p=>({x:-p.x,y:p.y}));
 }
 
@@ -106,6 +109,7 @@ export function mirrorAboutAxis(project, ids, from, to) {
   for (const entity of project.entities) if (ids.has(entity.id)) transform(entity, point => { const v=vector({x:point.x-from.x,y:point.y-from.y}); return { x: from.x+v.x, y: from.y+v.y }; });
   for(const recipe of project.notches||[])if(ids.has(recipe.baseEntityId))recipe.side*=-1;
   transformGradeVectors(project,ids,vector);
+  transformTableGrading(project,ids,vector,p=>{const v=vector({x:p.x-from.x,y:p.y-from.y});return {x:from.x+v.x,y:from.y+v.y};});
   transformMarkerGrains(project,ids,vector);
 }
 
@@ -146,7 +150,7 @@ export function deleteSelection(project, ids) {
 export function duplicateSelection(project, ids, makeId, {offsetX=10,offsetY=-10}={}) {
   if(!Number.isFinite(offsetX)||!Number.isFinite(offsetY))throw new Error('复制位移无效');
   const actualIds=new Set(project.entities.filter(entity=>ids.has(entity.id)).map(entity=>entity.id));
-  const gradingPlans=(project.gradingPlans||[]).filter(plan=>plan.sources.every(source=>actualIds.has(source.entityId)));
+  const gradingPlans=(project.gradingPlans||[]).filter(plan=>plan.method!=='table'&&plan.sources.every(source=>actualIds.has(source.entityId)));
   if((project.gradingPlans||[]).length+gradingPlans.length>30)throw new Error('复制后放码方案超过 30 组上限');
   const copyableSeams=new Set((project.seamAllowances||[]).filter(recipe=>[...recipe.baseEntityIds,...recipe.outputIds].every(id=>actualIds.has(id))).map(recipe=>recipe.id));
   const copyableNotches=new Set((project.notches||[]).filter(recipe=>[recipe.baseEntityId,...recipe.outputIds].every(id=>actualIds.has(id))&&(!recipe.targetSeamId||copyableSeams.has(recipe.targetSeamId))).map(recipe=>recipe.id));
@@ -191,5 +195,12 @@ export function duplicateSelection(project, ids, makeId, {offsetX=10,offsetY=-10
   project.gradingPlans=[...(project.gradingPlans||[]),...gradingPlans.map(plan=>{
     const copy=JSON.parse(JSON.stringify(plan));copy.id=makeId();copy.name+=' 副本';copy.sources=copy.sources.map(source=>({...source,entityId:idMap.get(source.entityId)}));copy.rules=copy.rules.map(rule=>({...rule,entityId:idMap.get(rule.entityId)}));copy.status='stale';delete copy.report;delete copy.error;return copy;
   })];
+  // A plan that grades by a size table covers the whole drawing (one size table per drawing, as in ET): it is not copied.
+  // The copies of its lines get the rules of the points they were copied from, and copied notches the rules of theirs.
+  for(const plan of project.gradingPlans||[])if(plan.method==='table'){
+    const more=plan.anchors.filter(anchor=>idMap.has(anchor.entityId)).map(anchor=>({...JSON.parse(JSON.stringify(anchor)),entityId:idMap.get(anchor.entityId),...(anchor.at?{at:{x:anchor.at.x+offsetX,y:anchor.at.y+offsetY}}:{})}));
+    plan.sources.push(...plan.sources.filter(source=>idMap.has(source.entityId)).map(source=>({...JSON.parse(JSON.stringify(source)),entityId:idMap.get(source.entityId)})));plan.anchors.push(...more);
+    plan.notchRules=[...(plan.notchRules||[]),...(plan.notchRules||[]).filter(rule=>notchMap.has(rule.notchId)).map(rule=>({...JSON.parse(JSON.stringify(rule)),notchId:notchMap.get(rule.notchId)}))];
+  }
   return new Set(copies.map(entity => entity.id));
 }

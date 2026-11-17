@@ -2,11 +2,12 @@
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>制衣 CAD · 纸样工作台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="line-edit.css"><link rel="stylesheet" href="position.css"><link rel="stylesheet" href="spread.css"><link rel="stylesheet" href="dart.css"><link rel="stylesheet" href="unfold.css"><link rel="stylesheet" href="piece-split.css"><link rel="stylesheet" href="piece-merge.css"><link rel="stylesheet" href="dxf.css"><link rel="stylesheet" href="table.css"><link rel="stylesheet" href="recovery.css"><link rel=stylesheet href=intersection-trim.css><link rel=stylesheet href=endpoint-extend.css><link rel="stylesheet" href="prj-writeback.css"><link rel="stylesheet" href="prj-endpoint.css"><link rel="stylesheet" href="prj-save.css"><link rel="stylesheet" href="prj-line.css"></head>
 <body>
-<header><div class="brand"><span class="brand-icon">衣</span><div><strong>制衣 CAD</strong><small>PATTERN STUDIO</small></div></div><div class="document"><span class="dot"></span><span id="document-name">未命名纸样</span><span id="dirty"></span></div><div class="file-actions"><button id="new">新建</button><button id="open">打开文件</button><button id="save" class="primary" title="保存全部编辑为 .zycad 工程">保存工程</button><button id="save-prj" aria-haspopup="dialog">保存 PRJ</button><div class="dxf-actions"><button id="export">原生 DXF</button><button id="dxf-options-button" data-dxf-settings aria-haspopup="dialog" aria-label="DXF 导出设置" title="DXF 导出设置">⌄</button></div></div></header>
+<header><div class="brand"><span class="brand-icon">衣</span><div><strong>制衣 CAD</strong><small>PATTERN STUDIO</small></div></div><div class="document"><span class="dot"></span><span id="document-name">未命名纸样</span><span id="dirty"></span></div><div class="file-actions"><button id="new">新建</button><button id="open">打开文件</button><button id="save" class="primary" title="保存全部编辑为 .zycad 工程">保存工程</button><button id="save-prj" aria-haspopup="dialog">保存 PRJ</button><div class="dxf-actions"><button id="export">原生 DXF</button><button id="export-aama" title="只导出裁片，按服装 CAD 之间交换用的 AAMA 格式：裁剪线、净线、刀口、内部线、打孔、布纹线和裁片名称、片数、布料。ET 用“打开DXF文件”可以打开">裁片 DXF</button><button id="dxf-options-button" data-dxf-settings aria-haspopup="dialog" aria-label="DXF 导出设置" title="DXF 导出设置">⌄</button></div></div></header>
 <nav class="command-bar"><div class="command-group"><button id="undo" title="Ctrl+Z">↶ 撤销</button><button id="redo" title="Ctrl+Shift+Z">↷ 重做</button></div><div class="command-group"><button id="fit">适合窗口 <kbd>F</kbd></button><button id="zoom-out">−</button><span id="zoom">100%</span><button id="zoom-in">＋</button></div><label><input type="checkbox" id="whole-group" checked> 整组选取</label><label><input type="checkbox" id="snap" checked> 吸附</label><select id="snap-mode" aria-label="吸附方式" title="9 像素范围内吸附；Alt 临时关闭。交点使用原生有限线条，重合或无法判定时拒绝落点。节点拖动吸附到其他原始线条；垂足/切点用于直线、折线、布纹线、测量的下一点。"><option value="endpoint">端点 / 顶点</option><option value="midpoint">端点＋中点 / 半长点</option><option value="nearest">线条最近点</option><option value="intersection">交点 / 自交点</option><option value="perpendicular" disabled>垂足（从起点）</option><option value="tangent" disabled>切点（从起点）</option><option value="off">不吸附</option></select><label><input type="checkbox" id="grid" checked> 网格</label><label><input type="checkbox" id="show-text" checked> 文字</label><button id="theme" title="切换画布明暗">深色画布</button><button id="recovery-open" aria-haspopup="dialog">本机恢复</button><span class="local-badge">● 文件在浏览器本地处理</span></nav>
 <main><aside class="tools" aria-label="绘图工具">
 <button data-tool="select" class="active" title="选择 / 移动 (V)"><b>↖</b><span>选择</span></button>
 <button data-tool="node" title="编辑节点 (N)"><b>◇</b><span>节点</span></button>
+<button id="smart-tool" title="智能笔：点点画线，框住线端再修改，右键结束（`）"><b>✎</b><span>智能笔</span></button>
 <button data-tool="line" title="直线 (L)"><b>╱</b><span>直线</span></button>
 <button data-tool="polyline" title="连续折线 (P)，Enter 完成"><b>⌁</b><span>折线</span></button>
 <button data-tool="curve" title="三点二次曲线 (C)"><b>⌒</b><span>曲线</span></button>
@@ -49,7 +50,7 @@
 <p id="construction-policy" class="muted"></p></section><section><div class="section-heading">工程信息 <span id="entity-count">0 条</span></div><div id="import-status" class="import-status">新建工程 · 毫米</div><button id="prj-writeback-open" aria-haspopup="dialog" hidden>PRJ 标注回存</button><details id="prj-endpoint-tools" hidden><summary>PRJ 独立直线端点回存 · 试验</summary><p id="prj-endpoint-hint" class="muted"></p><select id="prj-endpoint-line" aria-label="可回存的独立直线"></select><button id="prj-endpoint-locate">选择并定位独立线</button><button id="prj-endpoint-open" aria-haspopup="dialog">预览端点回存</button></details><details id="report" hidden><summary>导入报告</summary><div id="report-content"></div></details><div id="calibration" hidden><p class="muted">Alt 单击一条线，可在属性中按已知长度校准。也可直接输入每个原始单位对应的毫米数，缩放整个工程。</p><input id="unit-scale" type="number" min=".000001" step="any" value="1" aria-label="毫米换算系数"><button id="calibrate">确认毫米比例</button></div></section>
 <section id="inspection-panel"><div class="section-heading">轮廓检查 <span id="check-unit">mm</span></div><div class="pair"><label>端点容差<input id="check-tolerance" type="number" min="0" step="any" value="0.1"></label><button id="inspect-all">检查轮廓</button></div><p id="inspection-summary" class="muted" role="status">检查端点间隙、原始线段与原生曲线。</p><div id="inspection-results"></div><div id="inspection-details" hidden><p id="inspection-note" class="muted"></p><div id="inspection-issues"></div><p id="inspection-focus-status" role="status" class="muted"></p><svg id="inspection-zoom" viewBox="0 0 240 150" role="img" aria-label="问题区域局部放大示意" hidden></svg></div><button id="export-inspection" disabled>保存检查报告</button></section>
 <section><div class="section-heading">裁片与组合 <span id="group-count">0 组</span></div><div id="group-list" class="entity-list"></div><p class="muted">Shift 多选 · 左→右框选包含项 · 右→左框选相交项</p></section><section><div class="section-heading">图元 <span>选择后编辑</span></div><input id="filter" placeholder="搜索名称或图层" aria-label="搜索图元"><div id="entity-list" class="entity-list"></div></section>
-<section id="properties"><div class="section-heading">属性</div><div id="no-selection" class="muted">选择一条线或一片纸样，查看尺寸与编辑操作。</div><div id="selected-properties" hidden><div id="single-properties"><label>名称<input id="entity-name"></label><label>图层<select id="entity-layer"><option value="outline">轮廓</option><option value="internal">内部线</option><option value="grain">布纹线</option><option value="notch">刀口</option><option value="annotation">文字</option></select></label><div id="text-properties" hidden><label>文字内容<textarea id="text-content" rows="2"></textarea></label><label>字高（当前单位）<input id="text-height" type="number" min=".01" step=".1"></label></div></div><div id="dimensions" class="dimensions"></div><details id="reference-calibration" hidden><summary>按已知长度校准</summary><p class="muted">选择单条线，对照 ET 中的同一量测方式。确认后缩放整个工程，可撤销。</p><label>量测方式<select id="reference-mode"><option value="path">沿线总长（折线近似）</option><option value="chord">两端点直线距离</option></select></label><label>ET 中的已知长度（mm）<input id="known-length" type="number" min="0.000001" step="any" placeholder="请输入毫米数"></label><p id="reference-preview" class="muted"></p><button id="calibrate-reference">按此长度校准整个工程</button></details><details id="group-source" hidden><summary>裁片归属来源</summary><div id="group-source-content"></div></details><details id="source-details" hidden><summary>文件记录来源</summary><div id="source-content"></div></details><div class="pair"><label>移动 X<input id="move-x" type="number" value="0" step="1"></label><label>移动 Y<input id="move-y" type="number" value="0" step="1"></label></div><button id="translate">应用位移</button><div class="pair"><label>旋转 °<input id="angle" type="number" value="90"></label><button id="rotate">旋转</button></div><div class="pair"><button id="mirror">水平镜像</button><button id="duplicate">复制</button></div><label>组合名称<input id="group-name" placeholder="例如：前裤片"></label><div class="pair"><button id="group">建立组合</button><button id="ungroup">解散组合</button></div><div class="pair"><button id="rename-group">重命名组合</button><button id="fit-selected">定位所选</button></div><button id="delete" class="danger">删除所选</button></div></section>
+<section id="properties"><div class="section-heading">属性</div><div id="no-selection" class="muted">选择一条线或一片纸样，查看尺寸与编辑操作。</div><div id="selected-properties" hidden><div id="single-properties"><label>名称<input id="entity-name"></label><label>图层<select id="entity-layer"><option value="outline">轮廓</option><option value="internal">内部线</option><option value="grain">布纹线</option><option value="notch">刀口</option><option value="annotation">文字</option></select></label><div id="text-properties" hidden><label>文字内容<textarea id="text-content" rows="2"></textarea></label><label>字高（当前单位）<input id="text-height" type="number" min=".01" step=".1"></label></div></div><div id="dimensions" class="dimensions"></div><details id="reference-calibration" hidden><summary>按已知长度校准</summary><p class="muted">选择单条线，对照 ET 中的同一量测方式。确认后缩放整个工程，可撤销。</p><label>量测方式<select id="reference-mode"><option value="path">沿线总长（折线近似）</option><option value="chord">两端点直线距离</option></select></label><label>ET 中的已知长度（mm）<input id="known-length" type="number" min="0.000001" step="any" placeholder="请输入毫米数"></label><p id="reference-preview" class="muted"></p><button id="calibrate-reference">按此长度校准整个工程</button></details><details id="group-source" hidden><summary>裁片归属来源</summary><div id="group-source-content"></div></details><details id="source-details" hidden><summary>文件记录来源</summary><div id="source-content"></div></details><div class="pair"><label>移动 X<input id="move-x" type="number" value="0" step="1"></label><label>移动 Y<input id="move-y" type="number" value="0" step="1"></label></div><button id="translate">应用位移</button><div class="pair"><label>旋转 °<input id="angle" type="number" value="90"></label><button id="rotate">旋转</button></div><div class="pair"><button id="mirror">水平镜像</button><button id="duplicate">复制</button></div><label>组合名称<input id="group-name" placeholder="例如：前裤片"></label><div class="pair"><button id="group">建立组合</button><button id="ungroup">解散组合</button></div><div class="pair"><button id="rename-group">重命名组合</button><button id="fit-selected">定位所选</button></div><div class="pair"><button id="group-add" title="先选中一个裁片，再按住 Shift 加选画在它里面、还不属于任何裁片的线或文字，然后点这里：它们成为这个裁片的内部线，跟着它移动、放码和保存">加入裁片</button><button id="group-remove" title="按住 Alt 点选裁片里的内部线或文字（可以多选），然后点这里：它们变回不属于任何裁片的线，线本身不删。轮廓线和布纹线不能移出">移出裁片</button></div><button id="delete" class="danger">删除所选</button></div></section>
 <section id="merge-panel">
 <div class="section-heading">直边合片 <span>mm · 原生曲线</span></div>
 <button id="merge-return">返回选择，选取下一片</button>
@@ -216,7 +217,7 @@
     <div class="pair"><label>默认 / 批量宽度 mm<input id="seam-width" type="number" min=".001" step=".5" value="10"></label><label>方向<select id="seam-direction"><option value="out">向外</option><option value="in">向内</option></select></label></div>
     <div id="seam-edge-controls" hidden><button id="seam-fill-widths">将上方宽度应用到全部边</button><p id="seam-edge-note" class="muted"></p><div id="seam-edge-list"></div><p class="muted">凹形变宽若使局部边消失或边界相交，会拒绝生成；凹形变宽内缩目前仅支持尖角。可减小宽度差或改用统一宽度。圆接在相邻宽度间渐变；0 宽不代表自动完成折边角位。</p></div>
     <label>转角<select id="seam-join"><option value="miter">尖角（限长）</option><option value="round">圆角 / 变宽圆接</option><option value="square">方角</option></select></label>
-    <details><summary>计算设置</summary><div class="pair"><label>尖角限长倍数<input id="seam-miter" type="number" min="2" max="20" value="2"></label><label>连接容差 mm<input id="seam-gap" type="number" min="0" max="10" step=".01" value=".1"></label></div><p class="muted">容差内的断点仅在计算轮廓中直线连接，不改动基准。变宽连接段采用两侧较小宽度。曲线和圆角采样容差 0.01 mm，坐标网格 0.001 mm。</p></details>
+    <details><summary>计算设置</summary><div class="pair"><label>尖角限长倍数<input id="seam-miter" type="number" min="2" max="20" value="20"></label><label>连接容差 mm<input id="seam-gap" type="number" min="0" max="10" step=".01" value=".1"></label></div><p class="muted">容差内的断点仅在计算轮廓中直线连接，不改动基准。变宽连接段采用两侧较小宽度。曲线和圆角采样容差 0.01 mm，坐标网格 0.001 mm。</p></details>
     <div class="pair"><button id="preview-seam">预览</button><button id="fit-seam" disabled>定位预览</button></div><p id="seam-status" class="muted" role="status"></p><button id="apply-seam" class="primary" disabled>应用缝份</button><button id="detach-seam" hidden>解除关联，保留线条</button><p class="muted">关联缝份在结束编辑后随基准重算。生成失败时保留旧线并标红，需修复后才能导出 DXF。</p>
   </div>
 </section>
@@ -300,7 +301,8 @@
 <button id="plot-print" class="primary" disabled>打印全部 / 保存 PDF</button>
 <div class="pair"><button id="plot-html" disabled>全部页面 HTML</button><button id="plot-svg" disabled>完整纸样 SVG</button></div>
 <div class="pair"><button id="plot-page-svg" disabled>当前纸样页 SVG</button><button id="plot-report" disabled>出图报告</button></div>
-<p class="muted">当前页 SVG 只含预览中的这一页。导出所有纸样请用“完整纸样 SVG”；打印文件包含全部分页。</p>
+<div class="pair"><button id="plot-plt" disabled title="给绘图仪和裁床用的 HPGL 文件：整幅、1:1，每毫米 40 个单位；ET 可以用“打开PLT文件”打开">绘图仪 PLT（HPGL）</button></div>
+<p class="muted">当前页 SVG 只含预览中的这一页。导出所有纸样请用“完整纸样 SVG”；打印文件包含全部分页。PLT 是整幅输出，不分页，文字不写入。</p>
 <button id="plot-save-settings">保存出图设置到工程</button>
 <p class="muted">打印文件可离线打开。打印时选相同纸张、100% 或实际大小，关闭页眉页脚；先量校准页的 X/Y 两方向。保存设置后仍需保存工程文件。</p>
 <p class="muted">分页从左到右、从上到下。裁去后一页内容框左/上方空白边，叠放重叠区并对齐十字。打印快照不会随之后的纸样修改自动更新。</p>
@@ -313,6 +315,7 @@
 <label>新增裁片的尺码来源<select id="marker-size"><option value="">当前基码</option></select></label>
 <label>所选裁片的裁剪边界<select id="marker-boundary"></select></label>
 <button id="marker-add">加入排料清单</button>
+<button id="marker-add-all" title="选中了完整的裁片就只加入选中的，否则加入图里的全部裁片；有缝边的按缝边裁，片数和对称按裁片属性">加入全部裁片（片数按裁片属性）</button>
 <label>方案名称<input id="marker-name" value="排料方案" maxlength="200"></label>
 <div class="pair"><label>布宽 mm<input id="marker-width" type="number" value="1500" step="any"></label><label>最大布长 mm<input id="marker-length" type="number" value="10000" step="any"></label></div>
 <div class="pair"><label>片间距 mm<input id="marker-spacing" type="number" value="3" step="any"></label><label>布边留量 mm<input id="marker-margin" type="number" value="10" step="any"></label></div>
@@ -347,10 +350,24 @@
   <div class="section-heading">点放码 <span>基码 → 多尺码</span></div>
   <label>已保存方案<select id="grade-saved"><option value="">未选择方案</option></select></label>
   <button id="grade-create">用当前所选建立方案</button>
-  <p class="muted">先选基码裁片或多片，再建立方案。关联缝份和刀口随各尺码基准重算；不会缩放缝份宽度。</p>
+  <button id="grade-create-table" title="和 ET 一样：一张图一套号型和尺寸表，放码点用公式（如 胸围/4）或每码的步长来移动；可以存进 ET 文件">新建尺寸表放码（ET 的做法）</button>
+  <p class="muted">逐点输入位移：先选基码裁片或多片，再建立方案。尺寸表放码：管整张图，放码点用公式，能写进 ET 文件。关联缝份和刀口随各尺码基准重算；不会缩放缝份宽度。</p>
   <div id="grade-controls" hidden>
     <label>方案名称<input id="grade-name" maxlength="200"></label>
     <label>基码名称<input id="grade-base-size" maxlength="50" value="M"></label>
+    <div id="grade-table-controls" hidden>
+      <p id="grade-table-info" class="muted"></p>
+      <details open><summary>号型</summary><div id="grade-table-sizes"></div><div class="pair"><button id="grade-table-smaller">加小一码</button><button id="grade-table-larger">加大一码</button></div><p class="muted">名称可以直接改。号型只能从两头加减。</p></details>
+      <details open><summary>尺寸表（cm，与 ET 的尺寸表一致）</summary><div id="grade-table-rows"></div>
+        <label>新的一项<input id="grade-table-new-name" maxlength="50" placeholder="名称，如 胸围"></label><div class="pair"><label>基码的值 cm<input id="grade-table-new-base" type="number" step="any"></label><label>每码差 cm<input id="grade-table-new-step" type="number" step="any" placeholder="0"></label></div><button id="grade-table-add-row">加进尺寸表</button>
+        <p class="muted">改一个数，再点“预览各尺码”。公式里的名称指这张表里的行：每个码按它与基码的差来算。</p></details>
+      <label class="grade-check"><input id="grade-show-rules" type="checkbox" checked> 在图上标出各点的放码规则</label>
+      <label>当前的线<select id="grade-table-entity"></select></label>
+      <div id="grade-table-anchors"></div>
+      <button id="grade-table-on-line" title="ET 的“增加放码点”：在线的中间加一个放码点，曲线在这里分段放码">在这条线上加放码点</button>
+      <p class="muted">公式写法与 ET 相同，例如“胸围/4+衣长/10”。只写一个数（如“0.5”）表示每差一个码移动这么多厘米。</p>
+    </div>
+    <div id="grade-point-controls">
     <details><summary>目标尺码与档数</summary><div id="grade-sizes"></div><div class="pair"><label>新尺码<input id="grade-new-size" maxlength="50" placeholder="XL"></label><label>相对基码档数<input id="grade-new-step" type="number" step="any" value="2"></label></div><button id="grade-add-size">添加尺码</button><p class="muted">档数只用于“按档差填表”；改变档数不改已输入的 X/Y 位移。新尺码的已设规则先填 0，请逐点确认。</p></details>
     <label>未设规则的点<select id="grade-interpolation"><option value="interpolate">沿节点 / 控制多边形插值</option><option value="fixed">保持基码坐标</option></select></label>
     <p class="muted">插值模式：两放码点间按基码折线或控制多边形距离分配位移，闭合图元循环插值；开放端外沿用最近规则。只有一个规则时整条图元平移。零增量规则可固定点位。</p>
@@ -363,6 +380,7 @@
     <button id="grade-fill-step">按档差填入此点</button>
     <div class="pair"><button id="grade-fix-point">此点全码归零</button><button id="grade-remove-rule">移除此点规则</button></div>
     <details><summary>相邻线条的同位端点</summary><label>同位容差 mm<input id="grade-coincident-tolerance" type="number" min="0" max="1" step=".001" value=".01"></label><p id="grade-coincident-list" class="muted"></p><button id="grade-copy-coincident">将此点规则复制到这些点</button><p class="muted">仅列出方案内相近的折线节点和样条端点；复制保留原间隙，不移动基码。请确认这些点确实对应。</p></details>
+    </div>
     <div id="grade-rule-list"></div>
     <div class="pair"><button id="grade-preview" class="primary">预览各尺码</button><button id="grade-fit" disabled>定位叠码</button></div>
     <label class="grade-check"><input id="grade-show" type="checkbox" checked> 显示放码预览</label>
@@ -375,7 +393,7 @@
     <button class="dxf-settings-link" data-dxf-settings>DXF 曲线格式设置</button>
     <div class="pair"><button id="grade-export-all" disabled>多尺码分层 DXF</button><button id="grade-report" disabled>导出放码报告</button></div>
     <button id="grade-delete" class="danger" hidden>删除方案，保留基码</button>
-    <p class="muted">方案随 .zycad 保存；尺码输出为独立工程。轮廓检查和对缝偏差需人工核对；生成失败的尺码不能导出。当前不读取 ET 的原生放码规则，也不输出 AAMA/ASTM 放码语义。</p>
+    <p class="muted">方案随 .zycad 保存；尺码输出为独立工程。轮廓检查和对缝偏差需人工核对；生成失败的尺码不能导出。从 ET 文件带入的方案按尺寸表和公式放码，保存为 ET 文件时一起写入；逐点输入位移的方案只随 .zycad 保存。不输出 AAMA/ASTM 放码语义。</p>
   </div>
 </section>
 <footer>实验版本 · PRJ 导入需核对<br>支持旧版尺码选择 · 标注回存试验</footer></aside></main>
@@ -428,6 +446,6 @@
 <div class="pair"><button id="prj-line-cancel">返回编辑</button><button id="prj-line-download" class="primary" disabled>下载新增直线 PRJ 副本</button></div>
 </dialog>
 <input id="file" type="file" accept=".prj,.dxf,.json,.zycad" hidden>
-<script type="module" src="app.js?v=52"></script>
+<script type="module" src="app.js?v=67"></script>
 <script type="module">const a=document.createElement('a');a.href='agent.html';a.target='_blank';a.rel='noopener';a.textContent='ET 本机任务';a.style.cssText='padding:6px 10px;color:#176c7a;white-space:nowrap';document.querySelector('.file-actions').append(a);</script>
 </body></html>

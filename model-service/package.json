@@ -1,0 +1,18 @@
+{
+  "name": "zhiyi-model-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "智衣 CAD 制版助手的模型服务（参考实现）：把一句话变成画图命令的计划，模型密钥只放在这里。",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node server.mjs --check",
+    "demo": "node server.mjs --provider demo"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0"
+  }
+}

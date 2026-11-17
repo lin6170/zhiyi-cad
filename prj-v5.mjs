@@ -79,7 +79,10 @@ export function parseNativeV5Prj(bytes, filename) {
     for(let o=root.nodeOffset;o+229<records[0].offset;o++){
       if(u32(o+4)===0&&f32(o+11)===1&&u32(o+15)===0&&u32(o+20)===1&&u32(o+25)===1&&u32(o+53)===0){textStart=o;break;}
     }
-    require(root.textCount>0&&textStart>root.nodeOffset,'独立文字区尚未识别。');
+    // A drawing without standalone texts has nothing between its point table and its first curve: ET writes such files when a
+    // drawing has no text (seen in files it saved from text-less drawings). A text record found there would contradict the count.
+    if(root.textCount===0){require(textStart===0,'文字数量为 0，但曲线之前有文字记录。');textStart=records[0].offset;}
+    require(textStart>root.nodeOffset,'独立文字区尚未识别。');
     let textCursor=textStart;
     for(let ti=0;ti<root.textCount;ti++){
       const o=textCursor;range(o,229);
@@ -145,7 +148,10 @@ export function parseNativeV5Prj(bytes, filename) {
       const ownedCurves=references(records.length,'所属曲线'),ownedNodes=references(nodes.length,'所属点'),auxiliaryIndices=references(100000,'辅助对象'),ownedTexts=references(10000,'所属文字'),unattachedIndices=references(100000,'独立对象');
       const tail=c;range(tail,208);
       for(const delta of [0,56]){for(let j=0;j<13;j++)require(f32(tail+delta+j*4)===(j%4===0?1:0),'裁片包含未支持的主变换。');require(u32(tail+delta+52)===0x01000000,'裁片变换尾部异常。');}
-      require(zero(tail+112,2)&&u32(tail+166)===0x01000000&&zero(tail+170,38),'裁片附加变换结构异常。');
+      // The byte before the additional transform is 0 for the pieces of every sample, and 8 for a piece ET itself made from a closed
+      // loop of loose lines when it regenerated every seam allowance (seen in v55). What the 8 tells ET is not known; it is kept as read.
+      const pieceMark=bytes[tail+112];
+      require((pieceMark===0||pieceMark===8)&&bytes[tail+113]===0&&u32(tail+166)===0x01000000&&zero(tail+170,38),'裁片附加变换结构异常。');
       const additionalTransform=Array.from({length:13},(_,i)=>f32(tail+114+i*4));require(finite(additionalTransform),'裁片附加变换无效。');c+=208;
       if(pi+1<pieces.length)require(c===pieces[pi+1].offset,'裁片记录边界不一致。');else textCountOffset=c;
       const ownedSet=new Set(ownedCurves.indices);require(ownedSet.size===ownedCurves.indices.length && chains.every(chain=>chain.indices.every(i=>ownedSet.has(i))),'裁片曲线归属集合不一致。');

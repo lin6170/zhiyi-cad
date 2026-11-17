@@ -1,4 +1,5 @@
 import { defaultPlotSettings,normalizePlotSettings,preparePlot,resolvePlotSource,plotSourceStamp,plotPageContent,plotPageSvg,plotPrintHtml,wholePlotSvg,plotReport } from './plot.mjs';
+import { plotHpgl } from './hpgl-export.mjs';
 export function createPlotPanel({getProject,getSelection,getTool,commit,setTool,render,fit,notify,download}){
   const $=id=>document.getElementById(id),clone=v=>JSON.parse(JSON.stringify(v)),num=id=>$(id).value.trim()?Number($(id).value):NaN;
   const fields=[['plot-mode','mode'],['plot-paper','paper'],['plot-orientation','orientation'],['plot-custom-width','customWidth'],['plot-custom-height','customHeight'],['plot-roll-width','rollWidth'],['plot-margin','margin'],['plot-overlap','overlap'],['plot-rotation','rotation'],['plot-line-width','lineWidth'],['plot-color','color'],['plot-text','showText'],['plot-marks','marks'],['plot-calibration','calibration']];
@@ -13,7 +14,7 @@ export function createPlotPanel({getProject,getSelection,getTool,commit,setTool,
   function frame(){return [{type:'polyline',points:[{x:0,y:0},{x:preview?.paperWidth||210,y:preview?.paperHeight||297}]}];}
   function fitPage(){if(preview){setTool('plot');fit(frame());}}
   function updateControls(){
-    for(const id of ['plot-fit','plot-print','plot-html','plot-svg','plot-page-svg','plot-report','plot-page','plot-first-drawing'])$(id).disabled=!preview;
+    for(const id of ['plot-fit','plot-print','plot-html','plot-svg','plot-page-svg','plot-report','plot-plt','plot-page','plot-first-drawing'])$(id).disabled=!preview;
     $('plot-show-calibration').disabled=!preview||!preview.pages.some(p=>p.kind==='calibration');
     $('plot-prev').disabled=!preview||pageIndex<=0;$('plot-next').disabled=!preview||pageIndex>=preview.pages.length-1;
     $('plot-paper-fields').hidden=settings.mode==='full';$('plot-selection-info').textContent=settings.source==='selection'?'已记录 '+settings.selectionIds.length+' 个图元；改变选区后可重新点击“用当前选区”。':'纸样位置、已保存尺码或排料方案直接作为出图来源。';
@@ -61,6 +62,8 @@ export function createPlotPanel({getProject,getSelection,getTool,commit,setTool,
   $('plot-svg').onclick=action(()=>download(wholePlotSvg(current()),filename()+'.svg','image/svg+xml'));
   $('plot-page-svg').onclick=action(()=>download(plotPageSvg(current(),pageIndex),filename()+'-'+preview.pages[pageIndex].label+'.svg','image/svg+xml'));
   $('plot-report').onclick=action(()=>download(JSON.stringify(plotReport(current()),null,2),filename()+'-出图报告.json','application/json'));
+  // For plotters and cutters: the whole pattern at 1:1 as one HPGL sheet, whatever paper is chosen above.
+  $('plot-plt').onclick=action(()=>{const result=plotHpgl(current());download(result.text,filename()+'.plt','application/vnd.hp-hpgl');notify('已输出 PLT：'+result.lines+' 条线，幅面 '+Math.round(result.widthMm)/10+' × '+Math.round(result.heightMm)/10+' cm。'+(result.textsLeftOut?'文字没有写入（'+result.textsLeftOut+' 条）。':''));});
   $('plot-save-settings').onclick=action(()=>{const config=normalizePlotSettings(settings);preparePlot(getProject(),config);const next=clone(getProject());next.plotSettings=config;next.version=Math.max(next.version,10);commit(next);compute();notify('已记录出图设置，请保存工程文件。');});
   function draw({node,overlay,screen,scale}){
     if(getTool()!=='plot'||!preview)return;if(!pageCache.has(pageIndex))pageCache.set(pageIndex,plotPageContent(preview,pageIndex));

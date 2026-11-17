@@ -5,6 +5,10 @@ import { contoursForGroup, inspectProject } from './topology.mjs';
 import { syncAllowances } from './seams.mjs';
 import { syncNotches } from './notches.mjs';
 import { syncSeamChecks } from './seam-checks.mjs';
+import { applyTableGrading, ruleDisplacement, stationsOf, placeOnLine, FOLLOW_TOLERANCE_MM } from './grading-table.mjs';
+import { generateNotches } from './notches.mjs';
+import { closeContourGaps } from './contour-heal.mjs';
+const GRADED_JOINT_LIMIT=3;   // mm: how far apart two neighbouring contour ends may be in a graded size and still be brought together
 export { gradePoints, gradePointKey, normalizeGradingPlan } from './grading-schema.mjs';
 const clone=value=>JSON.parse(JSON.stringify(value)),cache=new WeakMap();
 export function createGradingPlan(project,ids,makeId){
@@ -15,6 +19,65 @@ export function createGradingPlan(project,ids,makeId){
   const baseSize=String(group?.source?.size||project.metadata?.baseSize||'M').trim().slice(0,50)||'M';
   const plan=normalizeGradingPlan({name:(group?.name||'纸样')+'放码',baseSize,sources:originals.map(gradeSource),sizes:[{id:makeId(),label:baseSize==='M'?'S':'小一码',step:-1},{id:makeId(),label:baseSize==='M'?'L':'大一码',step:1}],rules:[],interpolation:'interpolate'});
   scopedProject(project,plan);return plan;
+}
+/** A new plan that grades by a size table, the way ET does: one for the whole drawing, with the base size and one size either side. */
+export function createTablePlan(project,makeId){
+  if(project.units!=='mm')throw new Error('请先校准毫米单位，再设置放码');
+  const other=(project.gradingPlans||[]).find(plan=>plan.method==='table');if(other)throw new Error('这张图已经有按尺寸表放码的方案“'+other.name+'”；一张图只有一套号型和尺寸表，请直接修改它');
+  const originals=project.entities.filter(entity=>!entity.derivedFrom&&!entity.notchFrom);if(!originals.some(entity=>entity.type!=='text'))throw new Error('图里还没有线，先画好基码纸样');
+  const base=String(project.metadata?.baseSize||'M').trim().slice(0,50)||'M',names=base==='M'?['S','L']:['小一码','大一码'];
+  return normalizeGradingPlan({name:'尺寸表放码',baseSize:base,interpolation:'fixed',method:'table',rules:[],sources:originals.map(gradeSource),
+    sizes:[{id:makeId(),label:names[0],step:-1,slot:8},{id:makeId(),label:names[1],step:1,slot:10}],
+    sizeTable:{unit:'cm',activeSeries:0,baseSlot:9,series:[[],[],[],[],[]],rows:[]},anchors:[],notchRules:[]});
+}
+/**
+ * Brings a plan that grades by a size table up to date with the drawing. As in ET, where rules sit on points, such a plan covers
+ * every original line of the drawing: lines drawn later join it (their ends follow the grading points they lie on). A rule stays
+ * with its point while its line keeps its number of points. When the line was deleted, cut, joined or redrawn, the rule is handed
+ * to a point of a line on the same place; when no point is left there it is dropped and counted in `lostRules`.
+ * Returns the plan (a new object) and what was done.
+ */
+export function reconcileTablePlan(project,plan){
+  const originals=project.entities.filter(entity=>!entity.derivedFrom&&!entity.notchFrom),byId=new Map(originals.map(entity=>[entity.id,entity]));
+  const stations=new Map(),stationsFor=id=>{if(!stations.has(id))stations.set(id,byId.has(id)?stationsOf(byId.get(id)):null);return stations.get(id);};
+  const anchors=[],orphans=[],taken=new Set(),near=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)<=FOLLOW_TOLERANCE_MM;
+  const keep=(anchor,entityId,index,line)=>{const p=line.points[index],{between,...rest}=anchor;anchors.push({...rest,entityId,index,at:{x:p.x,y:p.y},stations:line.points.length});taken.add(entityId+'#'+index);};
+  const keepOn=(anchor,entityId,between,line)=>{const {index,...rest}=anchor;anchors.push({...rest,entityId,between,stations:line.points.length});};
+  for(const anchor of plan.anchors){
+    const line=stationsFor(anchor.entityId);if(!line){orphans.push(anchor);continue;}
+    const count=line.points.length,same=anchor.stations===undefined||anchor.stations===count;
+    if(anchor.index!==undefined){
+      if(same&&anchor.index<count){keep(anchor,anchor.entityId,anchor.index,line);continue;}
+      // the line has another number of points now: the point on the same place, else the same end of the line
+      let index=anchor.at?line.points.findIndex((p,i)=>!taken.has(anchor.entityId+'#'+i)&&near(p,anchor.at)):-1;
+      if(index<0&&anchor.index===0)index=0;else if(index<0&&anchor.stations!==undefined&&anchor.index===anchor.stations-1)index=count-1;
+      if(index>=0&&!taken.has(anchor.entityId+'#'+index))keep(anchor,anchor.entityId,index,line);else orphans.push(anchor);
+    }else{
+      if(same&&anchor.between<count-1){keepOn(anchor,anchor.entityId,anchor.between,line);continue;}
+      const place=placeOnLine(byId.get(anchor.entityId),anchor.at);
+      if(place&&place.index!==undefined&&!anchor.plain&&!taken.has(anchor.entityId+'#'+place.index))keep(anchor,anchor.entityId,place.index,line);
+      else if(place&&place.between!==undefined)keepOn(anchor,anchor.entityId,place.between,line);else orphans.push(anchor);
+    }
+  }
+  let reattached=0,lost=0;
+  if(orphans.length){
+    const lines=originals.filter(entity=>entity.type!=='text').map(entity=>{let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of entity.points){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}return {entity,minX,minY,maxX,maxY};});
+    for(const anchor of orphans){
+      if(anchor.plain)continue;if(!anchor.at){lost++;continue;}
+      let done=false;const q=anchor.at,t=FOLLOW_TOLERANCE_MM;
+      for(const {entity,minX,minY,maxX,maxY} of lines){
+        if(q.x<minX-t||q.x>maxX+t||q.y<minY-t||q.y>maxY+t)continue;
+        const place=placeOnLine(entity,q);if(!place)continue;const line=stationsFor(entity.id);
+        if(place.index!==undefined){if(taken.has(entity.id+'#'+place.index))continue;keep(anchor,entity.id,place.index,line);done=true;break;}
+        if(anchor.index===undefined){keepOn(anchor,entity.id,place.between,line);done=true;break;}
+      }
+      if(done)reattached++;
+      // another grading point stands on the place: the lines there follow it, nothing is lost
+      else if(anchor.index===undefined||!anchors.some(other=>!other.plain&&other.index!==undefined&&near(other.at,q)))lost++;
+    }
+  }
+  const notchIds=new Set((project.notches||[]).map(notch=>notch.id)),notchRules=(plan.notchRules||[]).filter(rule=>notchIds.has(rule.notchId));lost+=(plan.notchRules||[]).length-notchRules.length;
+  return {plan:{...plan,sources:originals.map(gradeSource),anchors,notchRules,lostRules:(plan.lostRules||0)+lost},reattached,lost};
 }
 function scopedProject(project,plan){
   resolveGradeSources(project,plan);
@@ -62,12 +125,39 @@ export function gradedDisplacements(entity,plan,sizeId){
   });
 }
 export function generateGradedSize(project,value,sizeId){
-  const plan=normalizeGradingPlan(value),size=plan.sizes.find(size=>size.id===sizeId);if(!size)throw new Error('目标尺码已缺失');
+  let plan=normalizeGradingPlan(value);if(plan.method==='table')plan=reconcileTablePlan(project,plan).plan;
+  const size=plan.sizes.find(size=>size.id===sizeId);if(!size)throw new Error('目标尺码已缺失');
   const result=scopedProject(project,plan),sourceIds=new Set(plan.sources.map(source=>source.entityId));
   result.name=project.name+' · '+size.label;
+  // a plan that grades by a size table moves whole lines and curves at once (grading-table.mjs)
+  if(plan.method==='table'){
+    applyTableGrading(result.entities,plan,size);
+    if(plan.lostRules)result.warnings.push('有 '+plan.lostRules+' 个放码点原来所在的线被删除或改动以后，原来的位置上找不到点了，它们的规则已经去掉。核对后“更新放码方案”，这条提示就消掉。');
+    // The rules of two points on the same place can differ a little (other axes, another divisor), and then two neighbouring
+    // contour edges come apart by a fraction of a millimetre in a size. They are brought together as when an ET file is opened.
+    const byId=new Map(result.entities.map(entity=>[entity.id,entity]));
+    for(const group of result.groups)for(const contour of contoursForGroup(group)){
+      const edges=contour.entityIds.map(id=>byId.get(id));if(edges.length<2||edges.some(edge=>!edge))continue;
+      try{const healed=closeContourGaps(edges,GRADED_JOINT_LIMIT);if(healed.count&&healed.largest>.05)result.warnings.push('裁片“'+group.name+'”有 '+healed.count+' 处相邻的线端在这个码里对不上（最大 '+healed.largest.toFixed(2)+' mm），已合拢；请核对这几个点的放码规则。');}
+      catch(error){result.warnings.push('裁片“'+group.name+'”：'+error.message);}
+    }
+    // A notch with a rule of its own moves by its formulas and is put back on its edge, as ET does: its place along the edge
+    // in this size is where the moved point lies nearest to the graded edge.
+    for(const rule of plan.notchRules||[]){
+      const recipe=result.notches.find(notch=>notch.id===rule.notchId),original=(project.notches||[]).find(notch=>notch.id===rule.notchId),edge=recipe&&byId.get(recipe.baseEntityId);if(!recipe||!original||!edge)continue;
+      try{
+        const from=generateNotches(project,original.baseEntityId,{...original,targetSeamId:null}).stations,centre=from[Math.floor(from.length/2)].point,d=ruleDisplacement(plan,size,rule),to={x:centre.x+d.dx,y:centre.y+d.dy};
+        let best=null,walked=0;const points=edge.points;
+        for(let i=1;i<points.length;i++){const a=points[i-1],b=points[i],ux=b.x-a.x,uy=b.y-a.y,q=ux*ux+uy*uy,t=q?Math.max(0,Math.min(1,((to.x-a.x)*ux+(to.y-a.y)*uy)/q)):0,distance=Math.hypot(to.x-a.x-t*ux,to.y-a.y-t*uy),piece=Math.sqrt(q);if(!best||distance<best.distance)best={distance,along:walked+t*piece};walked+=piece;}
+        recipe.mode='start';recipe.position=Math.round(best.along*1e4)/1e4;
+      }catch(error){result.warnings.push('刀口“'+(recipe.name||'')+'”的放码规则没有用上：'+error.message);}
+    }
+  }
   for(const entity of result.entities)if(sourceIds.has(entity.id)){
+    if(plan.method!=='table'){
     const displacements=gradedDisplacements(entity,plan,sizeId),points=gradePoints(entity).map((p,i)=>({x:p.x+displacements[i].dx,y:p.y+displacements[i].dy}));
     if(entity.curve){entity.curve.controlPoints=points;refreshCurve(entity);}else entity.points=points;
+    }
     if(entity.source)entity.source.modified=true;
     entity.gradingSource={baseEntityId:entity.id,baseSize:plan.baseSize,size:size.label};
   }
@@ -76,7 +166,12 @@ export function generateGradedSize(project,value,sizeId){
   const makeId=()=>{let id;do{id='grade-generated-'+(++serial);}while(used.has(id));used.add(id);return id;};
   syncAllowances(result,makeId);syncNotches(result,makeId);syncSeamChecks(result);
   const invalid=[...result.seamAllowances,...result.notches].filter(recipe=>recipe.status!=='current');
-  if(invalid.length)throw new Error('尺码 '+size.label+' 的关联输出无法生成：'+invalid[0].error);
+  // A size made from the rules of an ET file is kept even when a seam allowance or a notch cannot be made in it (ET itself
+  // warns about such sizes when it saves them): what is missing is named, and the size is marked for checking.
+  if(invalid.length&&plan.method==='table'){
+    const owner=recipe=>{const base=recipe.baseEntityIds?recipe.baseEntityIds[0]:recipe.baseEntityId,group=result.groups.find(group=>group.entityIds.includes(base));return group?'裁片“'+group.name+'”的':'';};
+    for(const recipe of invalid)result.warnings.push(owner(recipe)+(result.seamAllowances.includes(recipe)?'缝份':'刀口')+'在这个码里没有生成：'+recipe.error);
+  }else if(invalid.length)throw new Error('尺码 '+size.label+' 的关联输出无法生成：'+invalid[0].error);
   if(result.entities.length>30000||result.entities.reduce((n,e)=>n+e.points.length,0)>1000000||result.entities.some(e=>e.points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)||Math.abs(p.x)>1e8||Math.abs(p.y)>1e8)))throw new Error('放码结果坐标或节点数量超出工程范围');
   result.metadata={format:'制衣 CAD 放码输出',baseSize:plan.baseSize,gradedSize:size.label,planName:plan.name};
   const inspection=inspectProject(result,.1),issues=inspection.results.filter(item=>item.status!=='within-tolerance');
@@ -86,22 +181,45 @@ export function generateGradedSize(project,value,sizeId){
   const box=bounds(result.entities),baseBox=bounds(result.entities.filter(entity=>sourceIds.has(entity.id)));
   return {size,project:result,inspection,summary:{sizeId:size.id,label:size.label,status:result.warnings.length?'review':'ready',entityCount:result.entities.length,contoursChecked:inspection.results.length,seamChecksCount:result.seamChecks.length,contourIssues:issues.length,seamCheckIssues:checkIssues.length,width:box?.width||0,height:box?.height||0,baseWidth:baseBox?.width||0,baseHeight:baseBox?.height||0,warnings:[...result.warnings]}};
 }
+// The sizes of plans that grade by a size table are made when they are asked for, not after every command: such a plan covers
+// the whole drawing, and making every size of a real pattern takes about a second. The last few results are kept.
+const tableCache=new Map();
+function tableSizes(project,plan){
+  const key=signature(project,plan);let found=tableCache.get(key);
+  if(!found){
+    found=plan.sizes.map(size=>{try{return generateGradedSize(project,plan,size.id);}catch(error){return {size,error:error.message,summary:{sizeId:size.id,label:size.label,status:'error',error:error.message}};}});
+    tableCache.set(key,found);while(tableCache.size>3)tableCache.delete(tableCache.keys().next().value);
+  }
+  return clone(found);
+}
 export function evaluateGradingPlan(project,value){
-  const plan=normalizeGradingPlan(value);resolveGradeSources(project,plan);
+  const plan=normalizeGradingPlan(value);if(plan.method==='table')return tableSizes(project,reconcileTablePlan(project,plan).plan);
+  resolveGradeSources(project,plan);
   return plan.sizes.map(size=>{try{return generateGradedSize(project,plan,size.id);}catch(error){return {size,error:error.message,summary:{sizeId:size.id,label:size.label,status:'error',error:error.message}};}});
 }
 function signature(project,plan){return JSON.stringify([normalizeGradingPlan(plan),project.units,project.entities,project.groups,project.seamAllowances,project.notches,project.seamChecks]);}
 export function syncGradingPlans(project){
   for(const plan of project.gradingPlans||[]){
+    if(plan.method==='table'){   // brought up to date with the drawing here; its sizes are made on demand (gradingResults)
+      try{Object.assign(plan,reconcileTablePlan(project,normalizeGradingPlan(plan)).plan);plan.status='current';delete plan.error;}catch(error){plan.status='error';plan.error=error.message;}
+      delete plan.report;continue;
+    }
     let key;try{
       key=signature(project,plan);if(cache.get(plan)?.key===key)continue;
       const results=evaluateGradingPlan(project,plan);cache.set(plan,{key,results});plan.report=results.map(result=>clone(result.summary));plan.status=results.some(result=>result.error)?'error':results.some(result=>result.summary.status==='review')?'review':'current';delete plan.error;
     }catch(error){cache.set(plan,{key,results:[]});plan.status='error';plan.error=error.message;delete plan.report;}
   }
 }
-export function gradingResults(project,plan){syncGradingPlans(project);return clone(cache.get(plan)?.results||[]);}
+/** The sizes of a saved plan. For a plan that grades by a size table, `compute: false` gives them only when they are already made (else null). */
+export function gradingResults(project,plan,{compute=true}={}){
+  if(plan.method==='table'){
+    let ready;try{ready=reconcileTablePlan(project,normalizeGradingPlan(plan)).plan;}catch(error){if(!compute)return null;throw error;}
+    if(!compute&&!tableCache.has(signature(project,ready)))return null;return tableSizes(project,ready);
+  }
+  syncGradingPlans(project);return clone(cache.get(plan)?.results||[]);
+}
 export function applyGradingPlan(project,value,makeId,planId=null){
-  const config=normalizeGradingPlan(value);resolveGradeSources(project,config);scopedProject(project,config);
+  let config=normalizeGradingPlan(value);if(config.method==='table')config=reconcileTablePlan(project,config).plan;resolveGradeSources(project,config);scopedProject(project,config);
   const plans=project.gradingPlans||[],existing=plans.find(plan=>plan.id===planId);
   if(planId&&!existing)throw new Error('待更新的放码方案已缺失');if(!existing&&plans.length>=30)throw new Error('最多支持 30 个放码方案');
   const plan=existing||{id:makeId()};Object.assign(plan,config);if(!existing)plans.push(plan);project.gradingPlans=plans;project.version=Math.max(project.version,8);syncGradingPlans(project);return plan;

@@ -37,6 +37,7 @@ function projectToSeam(project,base,station,normal,recipe){
   const hits=[];
   for(const id of recipe.outputIds){
     const entity=project.entities.find(item=>item.id===id);
+    if(['extension','fold','mark'].includes(entity?.seamRole))continue;   // v66: the extended seam is not the seam line; v67: nor the lines a vent draws
     if(!entity||!entity.closed)throw new Error('目标缝份输出缺失');
     const points=entity.points;
     for(let i=0;i<points.length;i++){
@@ -48,7 +49,17 @@ function projectToSeam(project,base,station,normal,recipe){
   }
   // A wrong side or swallowed narrow region must not jump to a remote edge.
   const nearest=hits.reduce((best,value)=>Math.min(best,value),Infinity);
-  if(!Number.isFinite(nearest)||Math.abs(nearest-expected)>tolerance)throw new Error('此侧未找到对应缝份；请切换左右侧或调整位置');
+  if(!Number.isFinite(nearest)||Math.abs(nearest-expected)>tolerance){
+    // A notch at the very end of an edge stands on a corner: there the ray can pass beside the allowance, because the
+    // allowance of the next edge or a corner treatment cuts it off (seen in one size of a real pattern, the notch 0.02 mm from
+    // the end). Then the notch goes to the place of the allowance outline nearest to where it should stand, if that is close.
+    let along=0;for(let i=1;i<base.points.length;i++)along+=Math.hypot(base.points[i].x-base.points[i-1].x,base.points[i].y-base.points[i-1].y);
+    const atEnd=!base.closed&&(station.position<=1||along-station.position<=1),wanted=offset(station.point,normal,expected);let best=null;
+    if(atEnd)for(const id of recipe.outputIds.filter(id=>!['extension','fold','mark'].includes(project.entities.find(item=>item.id===id)?.seamRole))){const points=project.entities.find(item=>item.id===id).points;
+      for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length],dx=b.x-a.x,dy=b.y-a.y,q=dx*dx+dy*dy,t=q?Math.max(0,Math.min(1,((wanted.x-a.x)*dx+(wanted.y-a.y)*dy)/q)):0,at={x:a.x+t*dx,y:a.y+t*dy},distance=Math.hypot(wanted.x-at.x,wanted.y-at.y);if(!best||distance<best.distance)best={distance,at};}}
+    if(best&&best.distance<=Math.max(2,expected/4))return {point:best.at,distance:Math.hypot(best.at.x-station.point.x,best.at.y-station.point.y)};
+    throw new Error('此侧未找到对应缝份；请切换左右侧或调整位置');
+  }
   return {point:offset(station.point,normal,nearest),distance:nearest};
 }
 export function generateNotches(project,baseEntityId,options={}){

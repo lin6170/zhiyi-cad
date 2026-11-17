@@ -5,19 +5,32 @@
  * Commands mutate a staged copy only; the caller validates and commits it.
  * Coordinates are millimetres, x to the right and y upward.
  */
-import { bounds, length as entityLength } from './geometry.mjs';
+import { bounds, length as entityLength, textWidth } from './geometry.mjs';
 import { refreshCurve } from './curves.mjs';
 import { fitClampedSpline, nativeFitPoints } from './fit-spline.mjs';
 import { orientChain, contoursForGroup } from './topology.mjs';
 import { moveSelection, rotateSelection, mirrorSelection, deleteSelection, duplicateSelection } from './selection.mjs';
-import { applyAllowance, syncAllowances } from './seams.mjs';
+import { applyAllowance, syncAllowances, SHARP_CORNER_LIMIT } from './seams.mjs';
 import { applyNotches } from './notches.mjs';
-import { seamEdgeDefinitions, edgeKey } from './seam-widths.mjs';
+import { seamEdgeDefinitions, edgeKey, edgeWidthMap } from './seam-widths.mjs';
+import { PAIR_KINDS } from './seam-corners.mjs';
 import { draftStraightPants, draftFields, validateDraftInput, DRAFT_COMMAND, DRAFT_SCHEMA } from './pants-draft.mjs';
 import { transform } from './geometry.mjs';
 import { LIMIT, number, point, idList, text, object, layer, validateInput, requireMm, samePoint, entityOf, groupOf, addEntity, assertWholePieces, existingIds, round } from './cad-command-kit.mjs';
 import { constructCommands } from './cad-command-construct.mjs';
 import { constructMoreCommands } from './cad-command-construct-more.mjs';
+import { manageCommands } from './cad-command-manage.mjs';
+import { markCommands } from './cad-command-marks.mjs';
+import { dartCommands } from './cad-command-darts.mjs';
+import { trimCommands } from './cad-command-trim.mjs';
+import { gradingCommands, describeGrading } from './cad-command-grading.mjs';
+import { extractCommands } from './cad-command-extract.mjs';
+import { spreadCommands } from './cad-command-spread.mjs';
+import { buildCommands } from './cad-command-build.mjs';
+import { curveCommands } from './cad-command-curves.mjs';
+import { seamToolCommands } from './cad-command-seam-tools.mjs';
+import { pieceInfo } from './piece-info.mjs';
+import { attributesOf, refreshPieceLabel } from './piece-attributes.mjs';
 
 export { validateInput };
 
@@ -25,9 +38,14 @@ export const COMMAND_SET_VERSION = 'zhiyi-command-set/v1';
 // One treated seam corner: a contour edge, one of its ends, and what happens there.
 const segmentField = { type: 'integer', minimum: 0, maximum: 10000, description: '闭合折线的第几条边，从 0 起；普通线条不填' };
 const endField = { type: 'string', enum: ['start', 'end'], description: '这条线的哪一端：start 起点，end 终点' };
-const cornerSizes = { first: number(.01, 1000, '切角：这条边的缝边线在两条缝边线交点之前截掉的长度，毫米'), second: number(.01, 1000, '切角：另一条边的缝边线截掉的长度，毫米；不填与 first 相同'),
-  drop: number(.01, 1000, '台阶角：侧缝的缝边线在折边缝边线以下多少毫米处停住'), run: number(.01, 1000, '台阶角：台阶的竖边在侧缝缝边线以内多少毫米') };
-const cornerItem = object({ entityId: text(120, '轮廓线'), segmentIndex: segmentField, end: endField, kind: { type: 'string', enum: ['cut', 'step', 'fold'], description: 'cut 切角，step 台阶角，fold 反转角' }, ...cornerSizes }, ['entityId', 'end', 'kind']);
+const cornerSizes = { first: number(.01, 1000, '切角：entityId 这条边的缝边线在两条缝边线交点之前截掉的长度，毫米'), second: number(.01, 1000, '切角：另一条边的缝边线截掉的长度，毫米；不填与 first 相同'),
+  drop: number(.01, 1000, '台阶角：entityId 这条边的缝边线停在离另一条边的缝边线多少毫米的地方（垂直于另一条边量，在缝份里面）'), run: number(.01, 1000, '台阶角：台阶上平行于 entityId 这条边的那一段（台阶的竖边），离这条边的缝边线多少毫米（垂直于这条边量）') };
+// v67: the sizes of the corners of ET's 专用角处理 that v65 left, as ET's dialog names them (mm)
+const cornerLetters = { a: number(0, 1000, '专用角处理的 A：单边直角延长多少；曲线断差1、3 宽的缝边线越过相接点延长多少（从相接点沿窄的那条边量），曲线断差2 见说明；反转翻角第一折多深；开叉是上面那条边缝边线停住的地方比斜线的落点再往上多少'), b: number(0, 1000, '专用角处理的 B：曲线断差1、3 过渡段多长，曲线断差2 见说明；反转翻角其余部分多深；开叉是斜线落在上面那条边净线上的点离相接点多远'),
+  c: number(0, 1000, '开叉的 C：折边上曲线的落点在相接点往上多远（开衩的缝边线往上延长这么多），默认 0'), d: number(0, 1000, '开叉半止口的 D：止口外边再往外加宽多少，默认 0') };
+const cornerShift = { shift: number(0, 1000, '可调反转：反转角在折边缝边线上的那一点，再沿折边缝边线往离开裁片的方向移多少毫米（只能往外，0 就是那一点）') };
+const cornerItem = object({ entityId: text(120, '轮廓线'), segmentIndex: segmentField, end: { type: 'string', enum: ['start', 'end', 'both'], description: '这条线的哪一端：start 起点，end 终点；反转翻角和开叉处理两端，写 both' }, kind: { type: 'string', enum: ['cut', 'mitre', 'fold', 'step', 'sevenStep', 'foldSquare', 'foldShift', 'doubleExtend', 'doubleProject', 'square', 'boundFold', 'extendFold', 'singleSquare', 'curveStep1', 'curveStep2', 'curveStep3', 'turnUp', 'ventHalf', 'ventFull'], description: 'cut 切角，mitre 折叠角，fold 反转角，step 台阶角（ET 的偷角处理），sevenStep 七字角，foldSquare 反转直角，foldShift 可调反转，doubleExtend 双延长角，doubleProject 双投影角，square 直角，boundFold 包边延长反转角，extendFold 延长反转角，singleSquare 单边直角，curveStep1、curveStep2、curveStep3 曲线断差1、2、3，turnUp 反转翻角，ventHalf 开叉半止口，ventFull 开叉全止口；各种处理怎么做见 seam.corner' }, ...cornerSizes, ...cornerLetters, ...cornerShift,
+  partner: object({ entityId: text(120, '两片的角处理：另一片上缝合的那条轮廓线'), segmentIndex: segmentField, end: endField }, ['entityId', 'end']), role: { type: 'string', enum: ['first', 'second'], description: '两片的角处理：first 是设的时候作为 groupId 的那一片，second 是另一片。两片的角处理一般用 seam.corner 设（直角和包边延长反转角两片一起改、两片都记，延长反转角只记在 first 这一片）；这里只在照原样写回已有的角处理时用' } }, ['entityId', 'end', 'kind']);
 // ---------------------------------------------------------------- helpers
 function primaryContour(group) { const contour = contoursForGroup(group).find(c => c.role === 'primary-contour' && c.entityIds.length); if (!contour) throw new Error('裁片“' + group.name + '”没有轮廓定义。'); return contour; }
 function chainGap(entities) {
@@ -131,7 +149,7 @@ function updateDraft(project, p, env) {
   Object.assign(record, { input: generated.input, report: generated.report, entityIds: generated.project.entities.map(e => e.id), groupIds: generated.project.groups.map(g => g.id) });
   return { summary: { operation: 'pattern.updateDraft', draftId: record.id, changed, report: generated.report }, measurements: generated.report.checks, created: record.id };
 }
-const draftSchema = partial => object(Object.fromEntries(['measurements', 'rules'].map(type => [type, object(Object.fromEntries(draftFields[type].map(([key, label, , min, max, hint, unit]) => [key, number(min, max, label + '，' + (unit === 'percent' ? '百分比' : '毫米') + '。' + hint)])), partial ? [] : draftFields[type].map(f => f[0]), type === 'measurements' ? '人体与长度尺寸，毫米' : '松量、成衣规格和制版系数')])), partial ? [] : ['measurements', 'rules']);
+const draftSchema = partial => object(Object.fromEntries(['measurements', 'rules'].map(type => [type, object(Object.fromEntries(draftFields[type].map(([key, label, example, min, max, hint, unit]) => [key, number(min, max, label + '，' + (unit === 'percent' ? '百分比' : '毫米') + '。' + hint + '。示例值 ' + example)])), partial ? [] : draftFields[type].map(f => f[0]), type === 'measurements' ? '人体与长度尺寸，毫米' : '松量、成衣规格和制版系数')])), partial ? [] : ['measurements', 'rules']);
 
 // ---------------------------------------------------------------- the command set
 export const commandSet = [
@@ -151,7 +169,7 @@ export const commandSet = [
       const e = addEntity(project, env, { name: p.name || (p.closed ? '闭合折线' : '折线'), type: 'polyline', closed: Boolean(p.closed), layer: p.layer || 'outline', points: p.points.map(q => ({ ...q })) });
       return { summary: { operation: 'draw.polyline', entityId: e.id, lengthMm: round(entityLength(e)) }, created: e.id };
     } },
-  { type: 'draw.rectangle', title: '画矩形', description: '按左下角和宽高画一个闭合矩形。',
+  { type: 'draw.rectangle', title: '画矩形', description: '按左下角和宽高画一个闭合矩形。得到一条闭合折线，四个点依次是左下、右下、右上、左上：第 0 条边是下边，第 1 条是右边，第 2 条是上边，第 3 条是左边。',
     input_schema: object({ x: number(-LIMIT, LIMIT, '左下角横坐标，毫米'), y: number(-LIMIT, LIMIT, '左下角纵坐标，毫米'), width: { type: 'number', exclusiveMinimum: 0, maximum: LIMIT, description: '宽，毫米' }, height: { type: 'number', exclusiveMinimum: 0, maximum: LIMIT, description: '高，毫米' }, name: text(60, '名称') }, ['x', 'y', 'width', 'height']),
     run(project, p, env) {
       requireMm(project);
@@ -166,12 +184,15 @@ export const commandSet = [
       const e = refreshCurve(addEntity(project, env, { name: p.name || '曲线', type: 'polyline', layer: p.layer || 'outline', points: [], curve: fitted.curve }));
       return { summary: { operation: 'draw.curve', entityId: e.id, lengthMm: round(entityLength(e)), throughPoints: p.points.length }, created: e.id };
     } },
-  { type: 'draw.text', title: '写文字', description: '在指定位置写一行文字，位置为文字左下角。',
-    input_schema: object({ text: text(200, '文字内容'), at: point('文字左下角'), height: { type: 'number', exclusiveMinimum: 0, maximum: 1000, description: '字高，毫米，默认 8' }, rotation: number(-360, 360, '逆时针旋转角度') }, ['text', 'at']),
+  { type: 'draw.text', title: '写文字', description: '在指定位置写一行文字。at 默认是文字的左下角；align 为 center 时 at 是文字的正中，用来把文字放在裁片或一块区域的中间。要让文字跟着裁片走，写完再用“加入裁片”把它加进裁片。师傅给了具体的字就用这条命令；要“名称 布料 × 片数”这种跟着裁片属性变的文字，用“属性文字”。',
+    input_schema: object({ text: text(200, '文字内容'), at: point('文字的位置：左下角，或者 align 为 center 时的正中'), height: { type: 'number', exclusiveMinimum: 0, maximum: 1000, description: '字高，毫米，默认 8' }, rotation: number(-360, 360, '逆时针旋转角度'),
+      align: { type: 'string', enum: ['left', 'center'], description: 'left：at 是文字左下角（默认）；center：at 是文字的正中' } }, ['text', 'at']),
     run(project, p, env) {
       requireMm(project);
-      const e = addEntity(project, env, { name: p.text, type: 'text', text: p.text, layer: 'annotation', height: p.height ?? 8, points: [{ ...p.at }], ...(p.rotation ? { rotation: p.rotation } : {}) });
-      return { summary: { operation: 'draw.text', entityId: e.id }, created: e.id };
+      const height = p.height ?? 8; let at = { ...p.at };
+      if (p.align === 'center') { const a = (p.rotation || 0) * Math.PI / 180, w = textWidth(p.text, height) / 2, h = height / 2; at = { x: round(p.at.x - w * Math.cos(a) + h * Math.sin(a)), y: round(p.at.y - w * Math.sin(a) - h * Math.cos(a)) }; }
+      const e = addEntity(project, env, { name: p.text, type: 'text', text: p.text, layer: 'annotation', height, points: [at], ...(p.rotation ? { rotation: p.rotation } : {}) });
+      return { summary: { operation: 'draw.text', entityId: e.id, at, widthMm: round(textWidth(p.text, height)) }, created: e.id };
     } },
   { type: 'entity.delete', title: '删除图元', description: '删除指定图元。裁片的线条只能整片一起删除。',
     input_schema: object({ entityIds: idList('要删除的图元') }, ['entityIds']),
@@ -220,46 +241,120 @@ export const commandSet = [
       project.groups.push(group);
       return { summary: { operation: 'piece.create', groupId: group.id, contourEdges: contour.length, members: members.length, maxGapMm: round(gap) }, created: group.id };
     } },
+  { type: 'piece.addMembers', title: '加入裁片', description: '把已经画好的线、曲线或文字加进一个裁片，成为它的内部线或文字：之后它们跟着裁片移动、旋转、复制，保存为 ET 文件时属于这个裁片。只能加不属于任何裁片的线和文字；缝份线、刀口这类派生的线不能加。裁片建好以后再画在它里面的线，都要这样加进去才算它的。',
+    input_schema: object({ groupId: text(120, '裁片'), entityIds: idList('要加进裁片的线、曲线或文字') }, ['groupId', 'entityIds']),
+    run(project, p) {
+      requireMm(project);
+      const group = groupOf(project, p.groupId), ids = [...existingIds(project, p.entityIds)], taken = new Map((project.groups || []).flatMap(g => g.entityIds.map(id => [id, g])));
+      for (const id of ids) { const e = entityOf(project, id), owner = taken.get(id); if (owner) throw new Error(owner === group ? '“' + e.name + '”已经在这个裁片里。' : '“' + e.name + '”已属于裁片“' + owner.name + '”。'); if (e.derivedFrom || e.notchFrom) throw new Error('“' + e.name + '”是缝份或刀口的派生线，不能编入裁片。'); if (e.type !== 'text' && e.layer !== 'grain' && e.layer !== 'internal') e.layer = 'internal'; }
+      group.entityIds.push(...ids);
+      return { summary: { operation: 'piece.addMembers', groupId: group.id, added: ids.length, members: group.entityIds.length } };
+    } },
+  { type: 'piece.removeMembers', title: '移出裁片', description: '把内部线或文字从裁片里拿出来，变成不属于任何裁片的线；线本身不删。轮廓线和布纹线不能移出，带着刀口或记号的线也不能。',
+    input_schema: object({ groupId: text(120, '裁片'), entityIds: idList('要移出的内部线或文字') }, ['groupId', 'entityIds']),
+    run(project, p) {
+      requireMm(project);
+      const group = groupOf(project, p.groupId), ids = [...existingIds(project, p.entityIds)], contour = new Set(contoursForGroup(group).flatMap(c => c.entityIds));
+      for (const id of ids) { const e = entityOf(project, id); if (!group.entityIds.includes(id)) throw new Error('“' + e.name + '”不在这个裁片里。'); if (contour.has(id)) throw new Error('“' + e.name + '”是轮廓线，不能移出。'); if (e.layer === 'grain') throw new Error('布纹线不能移出裁片。'); if (e.derivedFrom || e.notchFrom || e.mark) throw new Error('“' + e.name + '”是缝份、刀口或记号，不能单独移出。'); if ((project.notches || []).some(n => n.baseEntityId === id)) throw new Error('“' + e.name + '”上有刀口，先删掉刀口。'); }
+      const gone = new Set(ids); group.entityIds = group.entityIds.filter(id => !gone.has(id));
+      return { summary: { operation: 'piece.removeMembers', groupId: group.id, removed: ids.length, members: group.entityIds.length } };
+    } },
   { type: 'piece.rename', title: '重命名裁片', description: '修改裁片名称。',
     input_schema: object({ groupId: text(120, '裁片'), name: text(60, '新名称') }, ['groupId', 'name']),
-    run(project, p) { const g = groupOf(project, p.groupId); if (g.name === p.name) throw new Error('名称没有变化。'); g.name = p.name; return { summary: { operation: 'piece.rename', groupId: g.id } }; } },
-  { type: 'seam.apply', title: '加缝份', description: '给裁片的净样轮廓加缝份。width 是各边的默认宽度，overrides 可单独指定某些边。0 表示该边不加缝份。',
-    input_schema: object({ groupId: text(120, '裁片'), width: number(0, 300, '默认缝份宽度，毫米'), overrides: { type: 'array', description: '单独指定宽度的边', maxItems: 500, minItems: 0, items: object({ entityId: text(120, '轮廓线'), segmentIndex: { type: 'integer', minimum: 0, maximum: 10000, description: '闭合折线的第几条边，从 0 起；普通线条不填' }, width: number(0, 300, '该边缝份宽度，毫米') }, ['entityId', 'width']) },
-      corners: { type: 'array', description: '个别转角的角处理。不填时保留这个裁片已有的角处理，填空数组则全部恢复成普通转角', maxItems: 200, minItems: 0, items: cornerItem } }, ['groupId', 'width']),
+    run(project, p) { const g = groupOf(project, p.groupId); if (g.name === p.name) throw new Error('名称没有变化。'); g.name = p.name; refreshPieceLabel(project, g); return { summary: { operation: 'piece.rename', groupId: g.id } }; } },
+  { type: 'seam.apply', title: '加缝份', description: '给裁片的净样轮廓加缝份。width 是各边的默认宽度，overrides 可单独指定某些边。0 表示该边不加缝份。裁片已经有缝份时再用这条命令：给了 width 就重新设定全部的边，没写进 overrides 的边都用 width；不给 width 时各边保留现在的宽度，只改 overrides 里的边。',
+    input_schema: object({ groupId: text(120, '裁片'), width: number(0, 300, '默认缝份宽度，毫米。裁片还没有缝份时必须给；已经有缝份、只改个别边时不给'), overrides: { type: 'array', description: '单独指定宽度的边', maxItems: 500, minItems: 0, items: object({ entityId: text(120, '轮廓线'), segmentIndex: { type: 'integer', minimum: 0, maximum: 10000, description: '闭合折线的第几条边，从 0 起；普通线条不填' }, width: number(0, 300, '该边缝份宽度，毫米') }, ['entityId', 'width']) },
+      corners: { type: 'array', description: '个别转角的角处理。不填时保留这个裁片已有的角处理，填空数组则全部恢复成普通转角', maxItems: 200, minItems: 0, items: cornerItem } }, ['groupId']),
     run(project, p, env) {
       requireMm(project);
-      const group = groupOf(project, p.groupId), ids = primaryContour(group).entityIds, edges = seamEdgeDefinitions(project, ids), widths = new Map(edges.map(edge => [edge.key, p.width]));
+      const group = groupOf(project, p.groupId), ids = primaryContour(group).entityIds, edges = seamEdgeDefinitions(project, ids), existing = seamOf(project, group);
+      if (p.width === undefined && !existing) throw new Error('这个裁片还没有缝份，请给出 width。');
+      if (p.width === undefined && !(p.overrides || []).length && p.corners === undefined) throw new Error('请给出 width，或者在 overrides 里给出要改的边。');
+      // without a width the edges keep what they have, and only the edges named in overrides change
+      const kept = new Map((existing?.edgeWidths || []).map(edge => [edgeKey(edge.entityId, edge.segmentIndex ?? null), edge.width]));
+      const widths = new Map(edges.map(edge => [edge.key, p.width ?? kept.get(edge.key) ?? Math.abs(existing.distance)]));
       for (const item of p.overrides || []) { const key = edgeKey(item.entityId, item.segmentIndex ?? null); if (!widths.has(key)) throw new Error('指定的边不在这个裁片的轮廓上。'); widths.set(key, item.width); }
       const largest = Math.max(...widths.values()); if (!(largest > 0)) throw new Error('缝份宽度全为 0。要去掉缝份请用删除缝份。');
       const corners = p.corners ?? seamOf(project, group)?.corners ?? [];
-      const recipe = applyAllowance(project, { name: group.name, entityIds: ids }, { distance: largest, widthMode: 'edges', join: 'miter', miterLimit: 2, edgeWidths: edges.map(edge => ({ entityId: edge.entityId, segmentIndex: edge.segmentIndex, segmentCount: edge.segmentCount, width: widths.get(edge.key) })), corners }, env.makeId);
+      const recipe = applyAllowance(project, { name: group.name, entityIds: ids }, { distance: largest, widthMode: 'edges', join: 'miter', miterLimit: SHARP_CORNER_LIMIT, edgeWidths: edges.map(edge => ({ entityId: edge.entityId, segmentIndex: edge.segmentIndex, segmentCount: edge.segmentCount, width: widths.get(edge.key) })), corners, extension: existing?.extension ?? null }, env.makeId);
       return { summary: { operation: 'seam.apply', groupId: group.id, edges: edges.length, widthsMm: [...new Set(widths.values())].sort((a, b) => a - b), ...(recipe.corners ? { corners: recipe.corners.length } : {}) }, created: recipe.id };
     } },
-  { type: 'seam.corner', title: '缝边角处理', description: '给裁片的一个转角指定缝份的角处理，裁片要先有缝份。cut 切角：两条缝边线在交点之前各截掉一段，再连成一条斜边。step 台阶角：用在折边的角上，侧缝的缝边线在折边缝边线以下 drop 处停住，向里走到离侧缝缝边线 run 的地方，再平行于侧缝走到折边的缝边线。fold 反转角：折边向里折回后正好与衣片对齐，侧缝的缝边线停在折边的净线上，折边那一段是侧缝缝边线的镜像。plain 恢复成普通转角。entityId 是一条轮廓线：切角时是这个转角的任意一条边，台阶角时是侧缝那条边，反转角时是折边那条边。end 或 near 说明是这条线的哪一端；反转角和 plain 不说明时两端都处理。',
+  { type: 'seam.corner', title: '缝边角处理', description: '给裁片的一个转角指定缝份的角处理（ET 的缝边角处理和专用角处理），裁片要先有缝份。entityId 是 groupId 这一片的一条轮廓线，按种类给：切角、折叠角、双延长角、双投影角给这个转角的任意一条边；台阶角给缝边线要拐台阶的那条边；反转角、七字角、反转直角、可调反转给折边（例如下摆）那条边，另一条边叫侧边；两片的角处理给这一片上缝合的那条边。end 或 near 说明是这条线的哪一端，两个都给时按 end；反转角、可调反转和 plain 不说明时两端都处理；反转翻角和两种开叉总是两端一起处理，不给 end（seam.apply 的 corners 里它们写 end: both）；其余的（包括七字角、反转直角、单边直角、曲线断差）必须说明，两端都要就用两条命令。各种处理：cut 切角：两条缝边线在交点之前各截掉一段（first 是 entityId 这条边的，second 是另一条边的），再连成一条斜边。mitre 折叠角（不是反转角）：两边的缝份各自沿净线折回衣片后，折回的缝份端线与“净线转角到两条缝边线交点”这条对角线平行，各自越过对角线 10 毫米（两边越到对方那一侧）；这 10 毫米是 ET 固定的，不能改；两边缝份都不小于 1 厘米时可以做，都在 7 毫米以下时做不了。fold 反转角：侧边的缝边线停在折边的净线上，折边那一段是侧边缝边线以折边净线为轴的镜像，折边折回后正好与衣片对齐。step 台阶角（ET 的偷角处理）：entityId 这条边的缝边线停在离另一条边的缝边线 drop 毫米的地方（垂直于另一条边量，在缝份里面），沿另一条边的方向向里走到离 entityId 这条边的缝边线 run 毫米的地方（垂直于 entityId 这条边量），再平行于 entityId 这条边走到另一条边的缝边线；两个尺寸都可以大于缝份宽度（ET 也是这样，竖边可以在净线以里）。sevenStep 七字角：侧边的缝边线停在折边的净线上，沿折边净线向里走到离侧边净线半个侧边缝份宽的那条线（垂直于侧边量），顺着这条线（平行于侧边）走到离折边净线半个折边缝份宽的地方，再斜着连到侧边净线延长后与折边缝边线的交点。foldSquare 反转直角：侧边的缝边线停在折边的净线上，往外是侧边缝边线以折边净线为轴的镜像，到离折边净线半个折边缝份宽的地方，再垂直于折边走到折边的缝边线。foldShift 可调反转：侧边的缝边线停在折边的净线上，然后直线连到这样一点：侧边缝边线以折边净线为轴的镜像与折边缝边线的交点（反转角在那里的点），再沿折边缝边线往离开裁片的方向移 shift 毫米（只能往外，0 就是那一点）。doubleExtend 双延长角：一条边的缝边线与另一条边净线的交点，直线连到另一条边的缝边线与这条边净线延长线的交点（给哪条边结果一样）。doubleProject 双投影角：两条缝边线都停在从净线转角垂直量过去的地方，再各自连到净线转角，缝份轮廓在这里凹进去碰到净线转角。square 直角、boundFold 包边延长反转角、extendFold 延长反转角是两片缝合处的角（缝合边是两片缝在一起的那条边，相交边是这个转角上与缝合边相接的另一条边，例如下摆），要用 partnerEntityId 和 partnerEnd（或 partnerNear，两个都给时按 partnerEnd）说明另一片上缝合的那条轮廓线和与这一端缝在一起的那一端；groupId 这一片就是先给的那一片。“按缝合时叠上去的位置”是：两片正面相对，两条缝合边重合，处理的这两端对在一起（所以另一片是翻过来的），两条缝合边长短不同也这样对。square：两片都把缝合边的净线越过转角延长同样的距离到一点，这个距离取两片中延长到各自相交边缝边线更远的那个（先给哪一片结果一样），从这一点垂直于缝合边量出各自的缝份宽度，连到缝合边的缝边线；延长得短的那一片，相交边的缝边线改成从它另一头的转角连到那一点的直线；一条命令两片都改。boundFold：这一片的相交边缝边线以缝合边的净线为轴镜像过来，相交边的缝边线和缝合边的缝边线都延长或截短到这条镜像线，中间就是这条线；另一片用同一条线（按缝合时叠上去的位置），与它自己的两条缝边线同样相交；一条命令两片都改。extendFold：只改这一片，也只记在这一片：另一片相交边的缝边线按缝合时叠上去的位置放过来，这一片的相交边缝边线和缝合边缝边线都延长或截短到这条线。在同一个转角再设别的处理，会把原来的换掉，两片的角处理从两片上一起换掉。还有专用角处理的另外几种，尺寸按 ET 对话框叫 a、b、c、d（毫米）；a、b 没有默认值（反转翻角的 b 除外），师傅没说就问；c、d 不给就是 0：singleSquare 单边直角：entityId 这条边的缝边线越过转角延长 a（从净线转角沿这条边量），再垂直于这条边连到另一条缝边线（两条缝边线平行时做不了）；做在断差处（两条边接近相切、缝份不同）就是把台阶挪到离相接点 a 的地方。curveStep1、curveStep2、curveStep3 曲线断差1、2、3：只能做在缝份宽度不同、接近相切（转折不到 15 度）的两条边相接的地方，例如开衩那条边和它上面相接的边；给这两条边中任一条、相接的那一端，结果一样。距离都从相接点沿窄的那条边量：宽的缝边线越过相接点往窄的那边延长到 a，再用 b 这一段过渡到窄的缝边线（在 a+b 处接上；1 是直线，3 是曲线）；2 从相接点就用曲线过渡，到 a+b 处接上窄的缝边线，曲线的样子看 a 占 a+b 的多少：a 越大，曲线贴着宽的缝边线走得越远才转过去（a 为 0 时，曲线断差2 和 a 为 0 的曲线断差3 画出来一样）。turnUp 反转翻角（卷边裤脚）：entityId 是下摆，两端一起处理，不用 end：侧边的缝边线停在下摆净线上，以下摆为轴镜像往外走 a，再按侧边原来的方向走 b 到下摆缝边线；a+b 必须等于下摆的缝份宽，b 要大于 a（ET 也这样要求），所以 a 要小于下摆缝份宽的一半；不给 b 时取下摆缝份宽减 a。师傅给的数做不到时不要去改下摆的缝份，告诉他做不了或问清楚。ventHalf 开叉半止口、ventFull 开叉全止口：entityId 要给开衩那条边（它和另一条边接近相切地相接、缝份比那条边宽，开衩的另一头是下摆；给那条窄的边会被拒绝），两端一起处理，不给 end。这里说的“上面那条边”就是开衩接着的那条窄的边，“往上”是离开开衩、沿那条边的方向，不管裁片怎么放。距离都从相接点沿上面那条边量：b 是一条斜线落在上面那条边净线上的点（这条斜线从折边上与相接点平齐的点连过来，平齐是从相接点垂直于开衩那条边量过去），a+b 是上面那条边的缝边线停住的地方，所以 a 是这两点之间的那一段；c 是开衩的缝边线（就是折边）越过相接点往上延长多少，曲线从上面那条边缝边线停住的地方连到折边延长后的那一头，再以折边为轴镜像到外面；a、b 可以是 0，但 a+b 要大于 c；开衩的缝边线变成虚线折边，折边外加止口：半止口一层，外边离开衩净线两个开衩缝份宽再加 d；全止口两层，中间又是一条虚线折边，外边离净线三个开衩缝份宽，d 不用（给了也不管）；下摆的缝边线延长到止口外边。plain 恢复成普通转角（ET 的延长角），去掉一个角处理就用它；反转翻角和开叉给这条边的哪一端都是两端一起去掉，两片的角处理会从两片上一起去掉。有角处理的裁片，场景的 seam.corners 会列出来。',
     input_schema: object({ groupId: text(120, '裁片'), entityId: text(120, '轮廓线'), segmentIndex: segmentField, end: endField, near: point('靠近要处理的那一端的任意一点'),
-      kind: { type: 'string', enum: ['cut', 'step', 'fold', 'plain'], description: 'cut 切角，step 台阶角，fold 反转角，plain 普通转角' }, ...cornerSizes }, ['groupId', 'entityId', 'kind']),
+      kind: { type: 'string', enum: [...['cut', 'mitre', 'fold', 'step', 'sevenStep', 'foldSquare', 'foldShift', 'doubleExtend', 'doubleProject', 'square', 'boundFold', 'extendFold', 'singleSquare', 'curveStep1', 'curveStep2', 'curveStep3', 'turnUp', 'ventHalf', 'ventFull'], 'plain'], description: 'cut 切角，mitre 折叠角，fold 反转角，step 台阶角（偷角处理），sevenStep 七字角，foldSquare 反转直角，foldShift 可调反转，doubleExtend 双延长角，doubleProject 双投影角，square 直角，boundFold 包边延长反转角，extendFold 延长反转角，singleSquare 单边直角，curveStep1 曲线断差1，curveStep2 曲线断差2，curveStep3 曲线断差3，turnUp 反转翻角，ventHalf 开叉半止口，ventFull 开叉全止口，plain 普通转角' },
+      ...cornerSizes, ...cornerShift, ...cornerLetters,
+      partnerEntityId: text(120, '两片的角处理：另一片上缝合的那条轮廓线'), partnerSegmentIndex: segmentField, partnerEnd: { ...endField, description: '两片的角处理：另一片那条边与这一端缝在一起的那一端：start 起点，end 终点' }, partnerNear: point('两片的角处理：靠近另一片那条边要处理的那一端的任意一点') }, ['groupId', 'entityId', 'kind']),
     run(project, p, env) {
       requireMm(project);
       const group = groupOf(project, p.groupId), ids = primaryContour(group).entityIds, recipe = seamOf(project, group);
       if (!recipe) throw new Error('裁片“' + group.name + '”还没有缝份，请先加缝份。');
-      const edges = seamEdgeDefinitions(project, ids), segmentIndex = p.segmentIndex ?? null, edge = edges.find(item => item.entityId === p.entityId && item.segmentIndex === segmentIndex);
-      if (!edge) throw new Error('指定的边不在这个裁片的轮廓上。');
-      const tips = { start: edge.points[0], end: edge.points.at(-1) }, far = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-      const ends = p.end ? [p.end] : p.near ? [far(p.near, tips.start) <= far(p.near, tips.end) ? 'start' : 'end'] : p.kind === 'fold' || p.kind === 'plain' ? ['start', 'end'] : null;
+      const far = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+      // one edge of a piece and the point at one of its ends
+      const edgeOf = (pieceIds, entityId, segment, message) => { const found = seamEdgeDefinitions(project, pieceIds).find(item => item.entityId === entityId && item.segmentIndex === segment); if (!found) throw new Error(message); return found; };
+      const edge = edgeOf(ids, p.entityId, p.segmentIndex ?? null, '指定的边不在这个裁片的轮廓上。'), segmentIndex = p.segmentIndex ?? null;
+      const tips = { start: edge.points[0], end: edge.points.at(-1) }, pair = PAIR_KINDS.includes(p.kind);
+      const both = ['turnUp', 'ventHalf', 'ventFull'].includes(p.kind);   // v67: 反转翻角 and 开叉 take both ends of their edge, as ET does
+      const ends = both ? ['start', 'end'] : p.end ? [p.end] : p.near ? [far(p.near, tips.start) <= far(p.near, tips.end) ? 'start' : 'end'] : ['fold', 'foldShift', 'plain'].includes(p.kind) ? ['start', 'end'] : null;
       if (!ends) throw new Error('请用 end 或 near 说明是这条线的哪一端。');
-      // a corner is one point: whatever was set there before, from either of its two edges, is replaced
-      const where = item => { const found = edges.find(x => x.entityId === item.entityId && x.segmentIndex === (item.segmentIndex ?? null)); return found ? (item.end === 'start' ? found.points[0] : found.points.at(-1)) : null; };
-      const before = recipe.corners || [], kept = before.filter(item => { const q = where(item); return q && !ends.some(end => far(q, tips[end]) < .01); });
-      const size = name => { if (!(p[name] > 0)) throw new Error(({ first: '切角需要 first：缝边线截掉的长度。', drop: '台阶角需要 drop：台阶的高度。', run: '台阶角需要 run：台阶竖边离侧缝缝边线的距离。' })[name]); return p[name]; };
-      const made = p.kind === 'plain' ? [] : ends.map(end => ({ entityId: p.entityId, segmentIndex, end, kind: p.kind,
-        ...(p.kind === 'cut' ? { first: size('first'), second: p.second ?? p.first } : p.kind === 'step' ? { drop: size('drop'), run: size('run') } : {}) }));
-      if (p.kind === 'plain' && kept.length === before.length) throw new Error('这个转角本来就是普通转角。');
-      const corners = [...kept, ...made], was = JSON.stringify(before);
-      applyAllowance(project, { name: group.name, entityIds: ids, recipeId: recipe.id }, { ...recipe, corners }, env.makeId);
-      if (JSON.stringify(recipe.corners || []) === was) throw new Error('角处理没有变化。');
-      return { summary: { operation: 'seam.corner', groupId: group.id, kind: p.kind, cornersChanged: ends.length, treatedCorners: corners.length } };
+      let partner = null;
+      if (pair) {
+        if (!p.partnerEntityId) throw new Error('直角、包边延长反转角和延长反转角是两片之间的角处理，请用 partnerEntityId 给出另一片上缝合的那条轮廓线。');
+        const otherGroup = (project.groups || []).find(g => g.id !== group.id && contoursForGroup(g).some(c => c.role === 'primary-contour' && c.entityIds.includes(p.partnerEntityId)));
+        if (!otherGroup) throw new Error('partnerEntityId 不是另一片裁片的轮廓线。');
+        const otherIds = primaryContour(otherGroup).entityIds, otherRecipe = seamOf(project, otherGroup);
+        if (!otherRecipe) throw new Error('另一片“' + otherGroup.name + '”还没有缝份，请先加缝份。');
+        const otherSegment = p.partnerSegmentIndex ?? null, otherEdge = edgeOf(otherIds, p.partnerEntityId, otherSegment, '指定的另一条边不在另一片的轮廓上。');
+        const otherTips = { start: otherEdge.points[0], end: otherEdge.points.at(-1) };
+        const otherEnd = p.partnerEnd || (p.partnerNear ? (far(p.partnerNear, otherTips.start) <= far(p.partnerNear, otherTips.end) ? 'start' : 'end') : null);
+        if (!otherEnd) throw new Error('请用 partnerEnd 或 partnerNear 说明另一片那条边的哪一端。');
+        partner = { group: otherGroup, ids: otherIds, recipe: otherRecipe, at: { entityId: p.partnerEntityId, segmentIndex: otherSegment, end: otherEnd }, tip: otherTips[otherEnd] };
+      }
+      // A corner is one point: whatever was set there before, from either of its two edges, is replaced. A treatment set on two pieces
+      // at once (直角, 包边延长反转角) goes from both of them.
+      const pending = new Map([[recipe.id, { recipe, ids, corners: [...(recipe.corners || [])] }]]);
+      const touch = (r, pieceIds) => { if (!pending.has(r.id)) pending.set(r.id, { recipe: r, ids: pieceIds, corners: [...(r.corners || [])] }); return pending.get(r.id); };
+      const pointsOf = (pieceIds, item) => { const found = seamEdgeDefinitions(project, pieceIds).find(x => x.entityId === item.entityId && x.segmentIndex === (item.segmentIndex ?? null)); return found ? (item.end === 'both' ? [found.points[0], found.points.at(-1)] : [item.end === 'start' ? found.points[0] : found.points.at(-1)]) : []; };
+      const clear = (entry, point) => {
+        const keep = [];
+        for (const item of entry.corners) {
+          const qs = pointsOf(entry.ids, item), q = qs.find(x => far(x, point) < .01) || (qs.length ? null : undefined);
+          if (q === null) { keep.push(item); continue; }
+          if (q && item.partner && item.kind !== 'extendFold') {
+            // the other half of a pair treatment
+            const otherRecipe = (project.seamAllowances || []).find(r => r.baseEntityIds.includes(item.partner.entityId)), otherGroup = otherRecipe && (project.groups || []).find(g => seamOf(project, g) === otherRecipe);
+            if (otherRecipe && otherGroup) { const other = touch(otherRecipe, primaryContour(otherGroup).entityIds); other.corners = other.corners.filter(x => !(x.kind === item.kind && x.partner && x.partner.entityId === item.entityId && (x.partner.segmentIndex ?? null) === (item.segmentIndex ?? null) && x.partner.end === item.end)); }
+          }
+        }
+        entry.corners = keep;
+      };
+      const own = pending.get(recipe.id), before = JSON.stringify(own.corners), countBefore = own.corners.length;
+      for (const end of ends) clear(own, tips[end]);
+      if (p.kind === 'plain' && own.corners.length === countBefore) throw new Error('这个转角本来就是普通转角。');
+      const size = name => { if (!(p[name] > 0)) throw new Error(({ first: '切角需要 first：缝边线截掉的长度。', drop: '台阶角需要 drop：台阶的高度。', run: '台阶角需要 run：台阶竖边离缝边线的距离。' })[name]); return p[name]; };
+      if (p.kind === 'foldShift' && !(p.shift >= 0)) throw new Error('可调反转需要 shift：往外移的距离（毫米，可以是 0）。');
+      if (pair) {
+        if (ends.length !== 1) throw new Error('两片的角处理一次只处理一个转角，请用 end 或 near 说明。');
+        const other = touch(partner.recipe, partner.ids); clear(other, partner.tip);
+        own.corners.push({ entityId: p.entityId, segmentIndex, end: ends[0], kind: p.kind, partner: { ...partner.at }, role: 'first' });
+        if (p.kind !== 'extendFold') other.corners.push({ ...partner.at, kind: p.kind, partner: { entityId: p.entityId, segmentIndex, end: ends[0] }, role: 'second' });
+      } else if (both) {
+        const a = p.a, width = edgeWidthMap(project, recipe.baseEntityIds, recipe).get(edgeKey(p.entityId, segmentIndex));
+        if (!(a >= 0)) throw new Error(p.kind === 'turnUp' ? '反转翻角需要 a：第一折多深（毫米）。' : '开叉需要 a 和 b（毫米）。');
+        if (p.kind === 'turnUp') { const b = p.b ?? (width - a); own.corners.push({ entityId: p.entityId, segmentIndex, end: 'both', kind: 'turnUp', a, b }); }
+        else { if (!(p.b >= 0)) throw new Error('开叉需要 b（毫米）。'); own.corners.push({ entityId: p.entityId, segmentIndex, end: 'both', kind: p.kind, a, b: p.b, c: p.c ?? 0, d: p.d ?? 0 }); }
+      } else if (['singleSquare', 'curveStep1', 'curveStep2', 'curveStep3'].includes(p.kind)) {
+        if (!(p.a >= 0)) throw new Error(p.kind === 'singleSquare' ? '单边直角需要 a：缝边线越过转角延长多少（毫米）。' : '曲线断差需要 a 和 b（毫米）。');
+        if (p.kind !== 'singleSquare' && !(p.b >= 0)) throw new Error('曲线断差需要 b：过渡段多长（毫米）。');
+        own.corners.push({ entityId: p.entityId, segmentIndex, end: ends[0], kind: p.kind, a: p.a, ...(p.kind === 'singleSquare' ? {} : { b: p.b }) });
+      } else if (p.kind !== 'plain') for (const end of ends) own.corners.push({ entityId: p.entityId, segmentIndex, end, kind: p.kind,
+        ...(p.kind === 'cut' ? { first: size('first'), second: p.second ?? p.first } : p.kind === 'step' ? { drop: size('drop'), run: size('run') } : p.kind === 'foldShift' ? { shift: p.shift } : {}) });
+      if (JSON.stringify(own.corners) === before && pending.size === 1) throw new Error('角处理没有变化。');
+      // every piece whose corners changed is rebuilt; a pair treatment also needs the partner rebuilt with its new corner
+      const groupOfRecipe = r => (project.groups || []).find(g => seamOf(project, g) === r);
+      for (const entry of pending.values()) { const g = groupOfRecipe(entry.recipe); applyAllowance(project, { name: g.name, entityIds: entry.ids, recipeId: entry.recipe.id }, { ...entry.recipe, corners: entry.corners }, env.makeId); }
+      return { summary: { operation: 'seam.corner', groupId: group.id, kind: p.kind, cornersChanged: ends.length, treatedCorners: own.corners.length, ...(partner ? { partnerGroupId: partner.group.id } : {}), ...(pending.size > 1 ? { piecesChanged: pending.size } : {}) } };
     } },
-  { type: 'notch.add', title: '加刀口', description: '在一条线上打刀口，通常是裁片的轮廓线。from 说明距离从这条线的哪一端量（start 起点，end 终点），distance 是沿线量的距离；也可以用 ratio 给出位置占全长的百分比。这条边有缝份时，刀口从缝边线向里切入 depth 毫米；没有缝份时画在净线上，toward 说明朝哪一侧。count 可以一次打 2 或 3 个并排的刀口，间距 spacing。保存为 ET PRJ 时，轮廓线上的刀口一起写入。',
+  { type: 'notch.add', title: '加刀口', description: '在一条线上打刀口，通常是裁片的轮廓线。from 说明距离从这条线的哪一端量（start 起点，end 终点），distance 是沿线量的距离；也可以用 ratio 给出位置占全长的百分比。这条边有缝份时，刀口从缝边线向里切入 depth 毫米；没有缝份时画在净线上，toward 说明朝哪一侧。count 是在同一个位置并排打 2 或 3 个，间距 spacing，不是把边等分：要等分，或者每隔一段打一个，每个位置各用一条这个命令。给了 segmentIndex 时，from、distance、ratio 都按这一条边算。保存为 ET PRJ 时，轮廓线上的刀口一起写入。',
     input_schema: object({ entityId: text(120, '要打刀口的线'), segmentIndex: segmentField, from: endField, distance: number(0, 100000, '离这一端沿线量的距离，毫米'), ratio: number(0, 100, '位置占全长的百分比，与 distance 二选一'),
       count: { type: 'integer', minimum: 1, maximum: 3, description: '并排的刀口个数，默认 1' }, spacing: number(.5, 100, '并排刀口的间距，毫米，默认 3'), depth: number(.5, 50, '刀口深度，毫米，默认 3'), toward: point('没有缝份时，刀口朝这一点所在的一侧') }, ['entityId']),
     run(project, p, env) {
@@ -286,7 +381,7 @@ export const commandSet = [
       notch.name = '刀口';
       return { summary: { operation: 'notch.add', notchId: notch.id, entityId: base.id, count: notch.outputIds.length, onSeamLine: onSeam, fromStartMm: round(mode === 'ratio' ? notch.baseLength * position / 100 : mode === 'end' ? notch.baseLength - position : position), lineLengthMm: round(notch.baseLength) }, created: notch.id };
     } },
-  { type: 'notch.remove', title: '删除刀口', description: '删除刀口。给 notchId 删一个；给 entityId 删这条线上的全部刀口。',
+  { type: 'notch.remove', title: '删除刀口', description: '删除刀口。给 notchId 删一个；给 entityId 删这条线上的全部刀口：闭合折线不给 segmentIndex 就是各条边上的全部，给了就只删那一条边上的。',
     input_schema: object({ notchId: text(120, '刀口'), entityId: text(120, '删掉这条线上的全部刀口'), segmentIndex: segmentField }, []),
     run(project, p) {
       if ((p.notchId === undefined) === (p.entityId === undefined)) throw new Error('请给出 notchId 或 entityId 其中一个。');
@@ -378,9 +473,19 @@ export const commandSet = [
     } },
   ...constructCommands,
   ...constructMoreCommands,
-  { type: DRAFT_COMMAND, title: '按尺寸生成直筒裤', description: '输入人体尺寸和制版规则，从零生成成人基础直筒裤的前后裤片、省、布纹线、定位线和缝份。全部尺寸为毫米。公式是演示规则，未经试衣确认。',
+  ...manageCommands,
+  ...markCommands,
+  ...dartCommands,
+  ...trimCommands,
+  ...gradingCommands,
+  ...extractCommands,
+  ...spreadCommands,
+  ...buildCommands,
+  ...curveCommands,
+  ...seamToolCommands,
+  { type: DRAFT_COMMAND, title: '按尺寸生成直筒裤', description: '输入人体尺寸和制版规则，从零生成成人基础直筒裤的前后裤片、省、布纹线、定位线和缝份。全部尺寸为毫米。公式是演示规则，未经试衣确认。每个字段都要给：师傅没有说的尺寸和规则，用该字段说明里的示例值，并在 assumptions 里写明哪几项用了示例值、请师傅核对。measurements 里的围度是人体净尺寸；师傅给的是成衣尺寸时，人体围度 = 成衣围度 − 对应的松量（腰围对 waistEase，臀围对 hipEase）。膝围和脚口都是单腿一整圈：师傅只说“脚口”或“膝围”多少、没说是平量还是一圈的，按一圈理解；只说了其中一个的，直筒裤的另一个取相同的值。这两条用到了都写进 assumptions。',
     input_schema: draftSchema(false), external: true },
-  { type: 'pattern.updateDraft', title: '按新尺寸重算纸样', description: '修改已生成直筒裤的部分尺寸或规则，整套纸样在原位置重新生成。纸样被手工改过时会拒绝，除非 discardManualEdits 为 true。',
+  { type: 'pattern.updateDraft', title: '按新尺寸重算纸样', description: '修改已生成直筒裤的部分尺寸或规则，整套纸样在原位置重新生成。给的是新的数值，不是加减多少；现在的数值在 scene.drafts 里这套纸样的 input 中。纸样被手工改过时会拒绝，除非 discardManualEdits 为 true。只是移动、旋转过裁片不算手工修改。只改脚口不会带动膝围，反过来也一样；原来两者相同而只改了一个时，在 assumptions 里告诉师傅另一个保持原值、裤腿不再上下一样宽。',
     input_schema: { ...draftSchema(true), properties: { ...draftSchema(true).properties, draftId: text(120, '要重算的纸样，省略时为最近生成的一套'), discardManualEdits: { type: 'boolean', description: '是否丢弃生成后的手工修改' } } },
     run: updateDraft },
 ];
@@ -393,6 +498,12 @@ export function toolDefinitions() {
 export const commandFromToolName = name => commandSet.find(command => command.type.replace(/\./g, '_') === name) || null;
 
 /** Compact description of the canvas for a planner: pieces with their contour edges and seam widths, loose lines, drafts. */
+/** Rows of buttons, buttonholes, drill holes and bartacks among some entities: one entry per row instead of one per line. */
+function markRows(entities) {
+  const rows = new Map();
+  for (const e of entities) { if (!e.mark) continue; if (!rows.has(e.mark.id)) rows.set(e.mark.id, { entityId: e.id, kind: e.mark.kind, sizeMm: e.mark.sizeMm, indices: new Set() }); rows.get(e.mark.id).indices.add(e.mark.index); }
+  return [...rows.values()].slice(0, 100).map(row => ({ entityId: row.entityId, kind: row.kind, count: row.indices.size, sizeMm: row.sizeMm }));
+}
 export function describeScene(project) {
   const byId = new Map(project.entities.map(e => [e.id, e])), grouped = new Set((project.groups || []).flatMap(g => g.entityIds));
   const drafts = project.metadata?.parametricDrafts || [], box = b => b && { minX: round(b.minX), minY: round(b.minY), maxX: round(b.maxX), maxY: round(b.maxY) };
@@ -401,20 +512,27 @@ export function describeScene(project) {
   const kind = e => e.type === 'text' ? 'text' : e.curve ? 'curve' : e.closed ? 'closed-polyline' : e.points.length === 2 ? 'line' : 'polyline';
   const pieces = (project.groups || []).slice(0, 200).map(group => {
     const members = group.entityIds.map(id => byId.get(id)).filter(Boolean), contourIds = contoursForGroup(group).find(c => c.role === 'primary-contour')?.entityIds || [], recipe = seamOf(project, group);
-    return { id: group.id, name: group.name, bbox: box(bounds(members.filter(e => e.type !== 'text' && !e.derivedFrom))),
+    const facts = pieceInfo(project, group);
+    const cut = attributesOf(group);
+    return { id: group.id, name: group.name, ...(group.locked ? { locked: true } : {}), fabric: cut.material, count: cut.count, ...(cut.symmetric ? { symmetric: true } : {}), bbox: box(bounds(members.filter(e => e.type !== 'text' && !e.derivedFrom))), ...(facts.areaMm2 === null ? {} : { areaMm2: facts.areaMm2, perimeterMm: facts.perimeterMm }),
       contour: contourIds.map(id => byId.get(id)).filter(Boolean).map(e => ({ entityId: e.id, name: e.name, kind: kind(e), lengthMm: round(entityLength(e)), from: e.points[0], to: e.points.at(-1), ...(e.closed ? { segments: e.points.length } : {}),
         ...(e.closed && !e.curve && e.points.length <= 60 ? { points: e.points.map(q => ({ x: round(q.x), y: round(q.y) })) } : {}) })),
-      otherMembers: members.filter(e => !e.derivedFrom && !contourIds.includes(e.id)).slice(0, 60).map(e => ({ entityId: e.id, name: e.name, kind: kind(e), layer: e.layer })),
+      otherMembers: members.filter(e => !e.derivedFrom && !e.mark && !contourIds.includes(e.id)).slice(0, 60).map(e => ({ entityId: e.id, name: e.name, kind: kind(e), layer: e.layer, ...(e.type !== 'text' && !e.closed && e.points?.length ? { from: { x: round(e.points[0].x), y: round(e.points[0].y) }, to: { x: round(e.points.at(-1).x), y: round(e.points.at(-1).y) } } : {}), ...(e.netExtension ? { netExtension: true } : {}) })),
+      ...(members.some(e => e.mark) ? { marks: markRows(members) } : {}),
       seam: recipe ? { widthsMm: recipe.widthMode === 'edges' ? [...new Set(recipe.edgeWidths.map(w => w.width))].sort((a, b) => a - b) : [Math.abs(recipe.distance)],
         ...(recipe.widthMode === 'edges' ? { edges: recipe.edgeWidths.map(w => ({ entityId: w.entityId, ...(w.segmentIndex === null || w.segmentIndex === undefined ? {} : { segmentIndex: w.segmentIndex }), widthMm: w.width })) } : {}),
         ...(recipe.corners?.length ? { corners: recipe.corners.map(c => ({ entityId: c.entityId, ...(c.segmentIndex === null ? {} : { segmentIndex: c.segmentIndex }), end: c.end, kind: c.kind,
-          ...(c.kind === 'cut' ? { firstMm: c.first, secondMm: c.second } : c.kind === 'step' ? { dropMm: c.drop, runMm: c.run } : {}) })) } : {}) } : null,
+          ...(c.kind === 'cut' ? { firstMm: c.first, secondMm: c.second } : c.kind === 'step' ? { dropMm: c.drop, runMm: c.run } : c.kind === 'foldShift' ? { shiftMm: c.shift } : {}),
+          ...Object.fromEntries(['a', 'b', 'c', 'd'].filter(k => c[k] !== undefined).map(k => [k + 'Mm', c[k]])),
+          ...(c.partner ? { partner: { entityId: c.partner.entityId, ...(c.partner.segmentIndex === null ? {} : { segmentIndex: c.partner.segmentIndex }), end: c.partner.end }, role: c.role } : {}) })) } : {}),
+        ...(recipe.extension ? { extension: { widthMm: recipe.extension.width, ...(recipe.extension.edges.length ? { edges: recipe.extension.edges.map(e => ({ entityId: e.entityId, ...(e.segmentIndex === null || e.segmentIndex === undefined ? {} : { segmentIndex: e.segmentIndex }), widthMm: e.width })) } : {}) } } : {}) } : null,
       ...((project.notches || []).some(n => group.entityIds.includes(n.baseEntityId)) ? { notches: project.notches.filter(n => group.entityIds.includes(n.baseEntityId)).slice(0, 80).map(n => ({ id: n.id, entityId: n.baseEntityId,
         ...(n.mode === 'ratio' ? { ratio: n.position } : { from: n.mode, distanceMm: round(n.position) }), count: n.count, onSeamLine: Boolean(n.targetSeamId) })) } : {}),
       draftId: drafts.find(d => d.groupIds.includes(group.id))?.id || null };
   });
-  const loose = project.entities.filter(e => !grouped.has(e.id) && !e.derivedFrom).slice(0, 300).map(e => ({ id: e.id, name: e.name, kind: kind(e), layer: e.layer, ...(e.aux ? { auxiliary: true } : {}),
+  const loose = project.entities.filter(e => !grouped.has(e.id) && !e.derivedFrom && !e.mark).slice(0, 300).map(e => ({ id: e.id, name: e.name, kind: kind(e), layer: e.layer, ...(e.aux ? { auxiliary: true } : {}), ...(e.mirrorOf ? { mirrorImageOf: e.mirrorOf } : {}),
     ...(e.type === 'text' ? { text: e.text, at: e.points[0] } : { lengthMm: round(entityLength(e)), from: e.points[0], to: e.points.at(-1), ...through(e) }) }));
-  return { units: project.units, name: project.name, entityCount: project.entities.length, pieceCount: (project.groups || []).length, bbox: box(bounds(project.entities)), pieces, looseEntities: loose,
+  const looseMarks = markRows(project.entities.filter(e => !grouped.has(e.id))), grading = describeGrading(project);
+  return { units: project.units, name: project.name, entityCount: project.entities.length, pieceCount: (project.groups || []).length, bbox: box(bounds(project.entities)), pieces, looseEntities: loose, ...(looseMarks.length ? { looseMarks } : {}), ...(grading ? { grading } : {}),
     drafts: drafts.map(d => ({ id: d.id, schema: d.schema, input: d.input, pieceIds: d.groupIds })) };
 }

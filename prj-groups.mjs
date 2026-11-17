@@ -109,7 +109,7 @@ export function parsePrjGroups(input, parsed) {
       source: { format: 'ET PRJ', offset: piece.offset, sourceId: piece.sourceId,
         pieceIndex: pieceIndex + 1, recordEnd, transformOffset: cursor,
         curveIds, textIds, grainId, contourChains: chains,
-        material: piece.material, size: piece.size, symmetry: piece.symmetry,
+        material: piece.material, materialCode: piece.materialCode, size: piece.size, symmetry: piece.symmetry, count: piece.count, symmetricCount: piece.symmetricCount, angle: piece.angle, labelFormat: piece.labelFormat, flag: piece.flag,
         ownedCurves, ownedNodes, auxiliaryIndices, ownedTexts, unattachedIndices,
         interpretation: 'serialized-piece-ownership-index-arrays',
       },

@@ -3,6 +3,8 @@
  * schema subset in use, and small project lookups. Kept apart so that command modules
  * can share them without importing each other.
  */
+import { contoursForGroup } from './topology.mjs';
+
 export const LIMIT = 100000;
 export const number = (minimum, maximum, description) => ({ type: 'number', minimum, maximum, description });
 export const point = description => ({ type: 'object', description, properties: { x: number(-LIMIT, LIMIT, '横坐标，毫米，向右为正'), y: number(-LIMIT, LIMIT, '纵坐标，毫米，向上为正') }, required: ['x', 'y'], additionalProperties: false });
@@ -50,3 +52,18 @@ export function assertWholePieces(project, ids) {
 }
 export function existingIds(project, list) { const ids = new Set(list); if (ids.size !== list.length) throw new Error('图元列表有重复。'); for (const id of ids) entityOf(project, id); return ids; }
 export const round = value => Math.round(value * 1000) / 1000;
+/**
+ * A line or curve whose ends a command may move: not a text, not made from a seam allowance or a notch, not part of a mark
+ * or a dart, without notches, and not on the outline of a piece. A line inside a piece may be changed; its piece is returned.
+ */
+export function changeableLine(project, id, what = '这条线') {
+  const entity = entityOf(project, id);
+  if (entity.type === 'text') throw new Error(what + '不能是文字。');
+  if (entity.derivedFrom || entity.notchFrom) throw new Error('“' + entity.name + '”是缝份或刀口的派生线，不能直接修改。');
+  if (entity.mirrorOf) throw new Error('“' + entity.name + '”是对称修改里跟着原线变的镜像，请改它的原线；要单独改它，先结束对称修改。');
+  if (entity.mark || entity.dart) throw new Error('“' + entity.name + '”是' + (entity.mark ? '扣位、打孔一类标记' : '省') + '的一部分，请用它自己的工具修改。');
+  const owner = (project.groups || []).find(group => group.entityIds.includes(id)) || null;
+  if (owner && contoursForGroup(owner).some(contour => contour.entityIds.includes(id))) throw new Error('“' + entity.name + '”是裁片“' + owner.name + '”的轮廓线，改它的端点会让轮廓断开；请用端移动。');
+  if ((project.notches || []).some(notch => notch.baseEntityId === id)) throw new Error('“' + entity.name + '”上有刀口，请先删除刀口再修改。');
+  return { entity, owner };
+}

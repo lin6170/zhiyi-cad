@@ -6,6 +6,7 @@ import { syncAllowances } from './seams.mjs';
 import { syncNotches } from './notches.mjs';
 import { generateGradedSize } from './grading.mjs';
 import { validateProject } from './geometry.mjs';
+import { attributesOf } from './piece-attributes.mjs';
 export { emptyMarkerPlan, normalizeMarkerPlan, markerTurns, markerInstanceKey } from './marker-schema.mjs';
 const clone=value=>JSON.parse(JSON.stringify(value)),cache=new WeakMap();
 export function markerSourceSignature(project){return JSON.stringify([project.units,project.entities,project.groups,project.seamAllowances,project.notches,project.seamChecks,project.gradingPlans,project.metadata?.baseSize,project.metadata?.gradedSize]);}
@@ -37,18 +38,35 @@ export function markerChoices(project,selected,gradePlanId=null,sizeId=null){
     addChoices(group.name,group.entityIds,chains);originalIds.forEach(id=>covered.add(id));
   }
   for(const entity of source.entities)if(selected.has(entity.id)&&!covered.has(entity.id)&&!entity.notchFrom){
-    if(entity.derivedFrom){const recipe=source.seamAllowances?.find(recipe=>recipe.id===entity.derivedFrom);if(recipe)addChoices(entity.name,recipe.baseEntityIds,[]);}
+    // A seam allowance of a piece that is already listed above stays the choice of that piece, with everything the piece holds
+    // (before v55 the choice made here replaced it, and the piece went onto the marker without its grain line, texts and inner lines).
+    if(entity.derivedFrom){const recipe=source.seamAllowances?.find(recipe=>recipe.id===entity.derivedFrom);if(recipe&&!recipe.baseEntityIds.every(id=>covered.has(id)))addChoices(entity.name,recipe.baseEntityIds,[]);}
     else if(entity.closed&&entity.type!=='text')addChoices(entity.name,[entity.id],[{role:'primary-contour',entityIds:[entity.id]}]);
   }
   const unique=new Map(choices.map(choice=>[choice.key,choice]));return {source,choices:[...unique.values()]};
 }
 export function markerItem(choice,makeId){return {id:makeId(),name:choice.name,memberIds:[...choice.memberIds],boundary:clone(choice.boundary),gradePlanId:choice.gradePlanId,sizeId:choice.sizeId,grainEntityId:choice.grains?.length===1?choice.grains[0].id:null,grainAngle:90,quantity:1,mirroredQuantity:0,direction:'one-way'};}
+// Every piece of the drawing (or of the selection) as a marker item, the way a patternmaker would add them one by one: cut along
+// the seam allowance where the piece has one and along its outline where it has none; as many as the attributes of the piece say,
+// and for a symmetric piece as many mirrored ones again (a pair is a piece and its mirror image). Loose closed shapes are not pieces.
+export function markerItemsForPieces(project,selected,makeId,gradePlanId=null,sizeId=null){
+  const {source,choices}=markerChoices(project,selected,gradePlanId,sizeId),byId=new Map(source.entities.map(e=>[e.id,e])),items=[],skipped=[];
+  for(const group of source.groups||[]){
+    const originals=group.entityIds.filter(id=>{const e=byId.get(id);return e&&!e.derivedFrom&&!e.notchFrom;}),key=JSON.stringify(originals);
+    const own=choices.filter(choice=>JSON.stringify(choice.memberIds)===key);if(!own.length)continue;
+    const seams=own.filter(choice=>choice.boundary.kind==='seam'),outlines=own.filter(choice=>choice.boundary.kind==='chain');
+    if(seams.length>1||!seams.length&&outlines.length!==1){skipped.push({name:group.name,reason:seams.length>1?'有 '+seams.length+' 条缝份，请逐个选定裁剪边界':'有 '+outlines.length+' 条轮廓，请逐个选定裁剪边界'});continue;}
+    const item=markerItem(seams[0]||outlines[0],makeId),attributes=attributesOf(group);
+    item.quantity=attributes.count;item.mirroredQuantity=attributes.symmetric?attributes.count:0;items.push(item);
+  }
+  return {items,skipped};
+}
 function boundaryPoints(source,item,config){
   let entities;
   if(item.boundary.kind==='seam'){
     const recipe=source.seamAllowances?.find(recipe=>recipe.id===item.boundary.recipeId);
     if(!recipe||recipe.status!=='current'||!recipe.baseEntityIds.every(id=>item.memberIds.includes(id)))throw new Error('裁剪缝份失效或不属于此裁片');
-    const outers=recipe.outputIds.map(id=>source.entities.find(e=>e.id===id)).filter(e=>e&&e.seamRole!=='hole');
+    const outers=recipe.outputIds.map(id=>source.entities.find(e=>e.id===id)).filter(e=>e&&e.seamRole!=='hole'&&e.seamRole!=='extension'&&e.seamRole!=='fold'&&e.seamRole!=='mark');   // v67: fold lines and marks are not outlines
     if(outers.length!==1)throw new Error('裁剪缝份已分裂为多个外边界，请先拆分为独立裁片');entities=outers;
   }else entities=item.boundary.entityIds.map(id=>{
     const entity=source.entities.find(entity=>entity.id===id);if(!entity||!item.memberIds.includes(id)||entity.type==='text'||entity.notchFrom||entity.derivedFrom)throw new Error('裁剪边界缺失或不属于原始裁片');return entity;

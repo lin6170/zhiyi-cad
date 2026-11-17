@@ -10,9 +10,18 @@
  *   response { schema: 'zhiyi-agent-plan/v1', reply, steps, actions, assumptions, questions, choices }
  *
  * "feedback" is set when the previous plan failed its preview: { error, step, steps }.
+ * A service that cannot answer may say why:  { error: '一句话' }  with a 4xx or 5xx status.
+ *
+ *   GET {serviceUrl}/v1/health     → { ok: true, request: 'zhiyi-agent-request/v1', provider, model, demo }
  */
 export const REQUEST_SCHEMA = 'zhiyi-agent-request/v1';
 const MAX_RESPONSE = 1024 * 1024;
+/** The reason a service gave for not answering: one short line of plain text, or nothing. */
+function said(raw) {
+  if (typeof raw !== 'string' || !raw || raw.length > 4000) return '';
+  try { const body = JSON.parse(raw); return typeof body?.error === 'string' ? [...body.error].filter(c => c.codePointAt(0) >= 32).join('').trim().slice(0, 300) : ''; } catch { return ''; }
+}
+const REQUEST_OPTIONS = { credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' };
 
 /** A service address the page may call: https, or http on this computer only. Returns the normalised base address. */
 export function checkServiceUrl(value) {
@@ -35,16 +44,36 @@ export function createRemotePlanner({ getSettings, fetchImpl = (...args) => glob
     let response;
     try {
       response = await fetchImpl(base + '/v1/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(settings.accessCode ? { Authorization: 'Bearer ' + settings.accessCode } : {}) }, body,
-        signal: controller.signal, credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' });
+        signal: controller.signal, ...REQUEST_OPTIONS });
     } catch (error) {
       throw new Error(controller.signal.aborted ? '模型服务在 ' + Math.round(timeoutMs / 1000) + ' 秒内没有回应。' : '连不上模型服务，请检查地址和网络。');
     } finally { clearTimeout(timer); }
-    if (response.status === 401 || response.status === 403) throw new Error('模型服务拒绝了访问，请检查访问码。');
-    if (response.status === 429) throw new Error('模型服务正忙或额度已用完，请稍后再试。');
-    if (!response.ok) throw new Error('模型服务出错（HTTP ' + response.status + '）。');
-    const raw = await response.text();
+    let raw; try { raw = await response.text(); } catch { raw = ''; }
+    if (!response.ok) {
+      const reason = said(raw);
+      if (response.status === 401) throw new Error('模型服务拒绝了访问，请检查访问码。');
+      if (response.status === 403) throw new Error(reason ? '模型服务拒绝了访问：' + reason : '模型服务拒绝了访问，请检查访问码。');
+      if (response.status === 429) throw new Error(reason ? '模型服务：' + reason : '模型服务正忙或额度已用完，请稍后再试。');
+      throw new Error(reason ? '模型服务：' + reason + '（HTTP ' + response.status + '）' : '模型服务出错（HTTP ' + response.status + '）。');
+    }
     if (raw.length > MAX_RESPONSE) throw new Error('模型服务返回的内容过大。');
     try { return JSON.parse(raw); } catch { throw new Error('模型服务返回的不是有效的计划。'); }
   }
   return Object.freeze({ id: 'remote', name: '模型服务', canRevise: true, plan });
+}
+
+/** Ask a service whether it is there and which model it uses. Resolves to { provider, model, demo }; throws with a reason. */
+export async function checkService({ serviceUrl, accessCode = '' }, { fetchImpl = (...args) => globalThis.fetch(...args), timeoutMs = 10000 } = {}) {
+  const base = checkServiceUrl(serviceUrl), controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try { response = await fetchImpl(base + '/v1/health', { method: 'GET', headers: accessCode ? { Authorization: 'Bearer ' + accessCode } : {}, signal: controller.signal, ...REQUEST_OPTIONS }); }
+  catch { throw new Error(controller.signal.aborted ? '这个地址在 ' + Math.round(timeoutMs / 1000) + ' 秒内没有回应。' : '连不上这个地址。请确认服务已经启动、地址没有写错；浏览器询问是否允许访问本机网络时，请选“允许”。'); }
+  finally { clearTimeout(timer); }
+  let raw; try { raw = await response.text(); } catch { raw = ''; }
+  if (response.status === 401) throw new Error('访问码不对。');
+  if (!response.ok) throw new Error(said(raw) || '这个地址有回应，但不是可用的模型服务（HTTP ' + response.status + '）。');
+  let body = null; try { body = JSON.parse(raw); } catch { /* not a service of this kind */ }
+  if (!body || body.ok !== true || body.request !== REQUEST_SCHEMA) throw new Error('这个地址有回应，但不是智衣 CAD 的模型服务。');
+  const short = (value, max) => [...String(value ?? '')].filter(c => c.codePointAt(0) >= 32).join('').slice(0, max);
+  return { provider: short(body.provider, 60), model: short(body.model, 80), demo: body.demo === true };
 }

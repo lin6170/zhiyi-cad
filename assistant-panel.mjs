@@ -5,7 +5,7 @@
  */
 import { createAssistant } from './assistant-core.mjs';
 import { localPlanner, EXAMPLES } from './assistant-local.mjs';
-import { createRemotePlanner, checkServiceUrl } from './assistant-remote.mjs';
+import { createRemotePlanner, checkServiceUrl, checkService } from './assistant-remote.mjs';
 import { bounds } from './geometry.mjs';
 
 const STORE = 'zhiyi-assistant/v1', ACCESS = 'zhiyi-assistant/access', SVG = 'http://www.w3.org/2000/svg';
@@ -26,6 +26,13 @@ function stepDetail(step) {
   if (step.type === 'pattern.draftStraightPants') return '前裤片、后裤片，含省、定位线、布纹线和缝份';
   if (step.type === 'piece.move' || step.type === 'selection.move') return (s.dx ? '向' + (s.dx > 0 ? '右 ' : '左 ') + cm(Math.abs(s.dx)) + ' cm ' : '') + (s.dy ? '向' + (s.dy > 0 ? '上 ' : '下 ') + cm(Math.abs(s.dy)) + ' cm' : '');
   if (s.degrees !== undefined) return (s.degrees < 0 ? '顺时针 ' : '逆时针 ') + Math.abs(s.degrees) + ' 度';
+  if (step.type === 'grade.setSizes') return '号型 ' + s.sizes.map(name => name === s.baseSize ? name + '（基码）' : name).join('、');
+  if (step.type === 'grade.setMeasure') return s.name + '：' + s.valuesCm.map(v => v.size + ' ' + v.value).join('，') + ' cm';
+  if (step.type === 'grade.setRule') return ({ start: '起点', end: '终点', point: '曲线点', onLine: '线上的放码点' })[s.where] + '：水平 ' + (s.x || '不动') + '，竖直 ' + (s.y || '不动') + (s.angleDeg ? '，方向转 ' + s.angleDeg + ' 度' : '')
+    + '；' + s.moves.map(m => m.size + ' 移动 (' + cm(m.dxMm) + ', ' + cm(m.dyMm) + ') cm').join('，') + (s.alsoChanged ? '；同一位置另外 ' + s.alsoChanged + ' 个点一起改' : '');
+  if (step.type === 'grade.removeRule') return '去掉 ' + s.removed + ' 个点的规则';
+  if (step.type === 'grade.removeMeasure') return '去掉“' + s.name + '”';
+  if (step.type === 'grade.clear') return '删掉 ' + s.sizes + ' 个号型、' + s.measures + ' 项尺寸、' + s.rules + ' 条规则';
   if (s.removed !== undefined) return '删除 ' + s.removed + ' 个图元';
   return '';
 }
@@ -45,7 +52,9 @@ export function createAssistantPanel({ commands, host, getSelection = () => [], 
     '<label class="assistant-radio"><input type="radio" name="assistant-planner" value="local"><span><strong>本机指令</strong>不联网，只认识固定的说法。</span></label>' +
     '<label class="assistant-radio"><input type="radio" name="assistant-planner" value="remote"><span><strong>模型服务</strong>把指令交给你配置的服务，由大模型规划画图步骤。</span></label>' +
     '<div id="assistant-remote-fields"><label>服务地址<input id="assistant-service-url" type="url" placeholder="https://…" autocomplete="off" spellcheck="false"></label><label>访问码（可选，只在本次浏览器会话内保留）<input id="assistant-access-code" type="password" autocomplete="off"></label>' +
-    '<p class="assistant-note">启用后，你输入的文字，以及画布上裁片和线条的名称、尺寸，会发送到这个服务。模型密钥只放在服务端，本页面不保存。</p></div>' +
+    '<div class="assistant-settings-actions"><button id="assistant-service-test" type="button">测试连接</button><span id="assistant-service-status" role="status"></span></div>' +
+    '<p class="assistant-note">启用后，你输入的文字，以及画布上裁片和线条的名称、尺寸，会发送到这个服务。模型密钥只放在服务端，本页面不保存。</p>' +
+    '<p class="assistant-help"><a href="./model-service.html" target="_blank" rel="noopener">怎样在自己的电脑上搭建模型服务</a></p></div>' +
     '<label class="assistant-unit">没写单位的数字按<select id="assistant-length-unit"><option value="">第一次用到时问我</option><option value="cm">厘米</option><option value="inch">英寸（可以写 3/8、1 3/8）</option><option value="mm">毫米</option></select></label>' +
     '<div class="assistant-settings-actions"><button id="assistant-settings-save" type="button" class="primary">保存设置</button><span id="assistant-settings-status" role="status"></span></div></section>' +
     '<div id="assistant-log" class="assistant-log" role="log" aria-live="polite" tabindex="0"></div>' +
@@ -131,10 +140,18 @@ export function createAssistantPanel({ commands, host, getSelection = () => [], 
 
   function fillSettings() {
     for (const radio of panel.querySelectorAll('input[name=assistant-planner]')) radio.checked = radio.value === settings.planner;
-    $('assistant-service-url').value = settings.serviceUrl || ''; $('assistant-access-code').value = accessCode; $('assistant-remote-fields').hidden = settings.planner !== 'remote'; $('assistant-settings-status').textContent = ''; $('assistant-length-unit').value = settings.preferences?.lengthUnit || '';
+    $('assistant-service-url').value = settings.serviceUrl || ''; $('assistant-access-code').value = accessCode; $('assistant-remote-fields').hidden = settings.planner !== 'remote'; $('assistant-settings-status').textContent = ''; $('assistant-service-status').textContent = ''; $('assistant-length-unit').value = settings.preferences?.lengthUnit || '';
   }
   for (const radio of panel.querySelectorAll('input[name=assistant-planner]')) radio.onchange = () => { $('assistant-remote-fields').hidden = radio.value !== 'remote' || !radio.checked; };
   $('assistant-settings-toggle').onclick = () => { const open = $('assistant-settings').hidden; if (open) fillSettings(); $('assistant-settings').hidden = !open; $('assistant-settings-toggle').setAttribute('aria-expanded', String(open)); };
+  // Uses what is typed in the two boxes now, saved or not, and asks the service who it is. Nothing of the drawing is sent.
+  $('assistant-service-test').onclick = async () => {
+    const status = $('assistant-service-status'), button = $('assistant-service-test');
+    status.textContent = '正在连接…'; delete status.dataset.error; button.disabled = true;
+    try { const info = await checkService({ serviceUrl: $('assistant-service-url').value, accessCode: $('assistant-access-code').value }); status.textContent = info.demo ? '已连接。这个服务是演示模式，还没有接大模型。' : '已连接。模型：' + info.model; }
+    catch (error) { status.textContent = error.message; status.dataset.error = 'true'; }
+    finally { button.disabled = false; }
+  };
   $('assistant-settings-save').onclick = () => {
     const planner = panel.querySelector('input[name=assistant-planner]:checked')?.value || 'local', status = $('assistant-settings-status'); let serviceUrl = $('assistant-service-url').value.trim();
     try { if (planner === 'remote') serviceUrl = checkServiceUrl(serviceUrl); else if (serviceUrl) serviceUrl = checkServiceUrl(serviceUrl); }

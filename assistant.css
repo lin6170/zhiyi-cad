@@ -18,7 +18,9 @@
 #assistant-remote-fields input{display:block;width:100%;margin-top:4px;padding:7px 8px;border:1px solid #d5ddd4;border-radius:5px;background:#fff}
 .assistant-note{margin:8px 0 0;color:#7a5b22;background:#fff7e4;padding:8px;border-radius:5px;line-height:1.6}
 .assistant-settings-actions{display:flex;align-items:center;gap:10px;margin-top:10px}
-#assistant-settings-status[data-error=true]{color:#a4472f}
+#assistant-settings-status[data-error=true],#assistant-service-status[data-error=true]{color:#a4472f}
+#assistant-service-status{line-height:1.5;overflow-wrap:anywhere}
+.assistant-help{margin:8px 0 0}.assistant-help a{color:#2f6f8f}
 .assistant-log{flex:1;min-height:60px;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:#fff}
 .assistant-message{max-width:92%;padding:8px 10px;border-radius:9px;line-height:1.65;overflow-wrap:anywhere}
 .assistant-message p{margin:0;white-space:pre-line}

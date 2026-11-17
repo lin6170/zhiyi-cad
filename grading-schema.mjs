@@ -1,3 +1,4 @@
+import { normalizeTablePlan } from './grading-table.mjs';
 export const gradePointKey=(entityId,index)=>JSON.stringify([entityId,index]);
 export const gradePoints=entity=>entity.curve?.controlPoints||entity.points;
 export function gradeSource(entity){
@@ -26,7 +27,10 @@ export function normalizeGradingPlan(value){
       present.add(delta.sizeId);return {sizeId:delta.sizeId,dx:delta.dx,dy:delta.dy};
     });return {entityId:rule.entityId,index:rule.index,deltas};
   });
-  return {name,baseSize,interpolation:value.interpolation,sources,sizes,rules};
+  const plan={name,baseSize,interpolation:value.interpolation,sources,sizes,rules};
+  // A plan that grades by a size table, the way ET does (see grading-table.mjs): its points move by formulas, not by typed amounts.
+  if(value.method==='table'){if(rules.length)throw new Error('按尺寸表放码的方案不能同时带逐点位移');Object.assign(plan,{method:'table'},normalizeTablePlan(value,sources,sizes));}
+  return plan;
 }
 export function resolveGradeSources(project,plan){
   if(project.units!=='mm')throw new Error('请先校准毫米单位，再设置放码');
@@ -57,3 +61,16 @@ export function prepareGradeVectorTransform(project,ids,vector){
   return ()=>{for(const {delta,x,y} of updates){delta.dx=x;delta.dy=y;}};
 }
 export function transformGradeVectors(project,ids,vector){prepareGradeVectorTransform(project,ids,vector)();}
+/**
+ * Plans that grade by a size table, when lines of the drawing are moved, turned or mirrored: the directions of the rules on
+ * those lines turn with them (so a piece grades the same way wherever it lies), and what the plan remembers of places moves along.
+ * `vector` maps a direction, `point` (optional) maps a place.
+ */
+export function transformTableGrading(project,ids,vector,point=null){
+  for(const plan of project.gradingPlans||[]){
+    if(plan.method!=='table')continue;
+    const turn=rule=>{for(const key of ['axisX','axisY']){const v=vector({x:rule[key][0],y:rule[key][1]}),length=Math.hypot(v.x,v.y);if(length>1e-12)rule[key]=[v.x/length,v.y/length];}};
+    for(const anchor of plan.anchors||[])if(ids.has(anchor.entityId)){if(!anchor.plain)turn(anchor);if(point&&anchor.at){const p=point(anchor.at);anchor.at={x:p.x,y:p.y};}}
+    for(const rule of plan.notchRules||[]){const notch=(project.notches||[]).find(item=>item.id===rule.notchId);if(notch&&ids.has(notch.baseEntityId))turn(rule);}
+  }
+}

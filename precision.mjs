@@ -1,6 +1,6 @@
 import { distance, length, transform, validateProject } from './geometry.mjs';
 import { curveLength } from './curves.mjs';
-import { transformGradeVectors } from './grading-schema.mjs';
+import { transformGradeVectors, transformTableGrading } from './grading-schema.mjs';
 
 export function referenceLength(entity, mode = 'path') {
   if (!entity || entity.type === 'text') throw new Error('请选择一条线作为校准基准');
@@ -19,6 +19,7 @@ export function calibratedProject(project, factor, reference = { method: 'direct
   const next = JSON.parse(JSON.stringify(project));
   for (const entity of next.entities) transform(entity, point => ({ x: point.x * factor, y: point.y * factor }));
   transformGradeVectors(next,new Set(next.entities.map(entity=>entity.id)),p=>({x:p.x*factor,y:p.y*factor}));
+  transformTableGrading(next,new Set(next.entities.map(entity=>entity.id)),p=>p,p=>({x:p.x*factor,y:p.y*factor}));
   for(const recipe of next.seamAllowances||[]){
     recipe.distance=recipe.widthMode==='edges'?Math.sign(recipe.distance):recipe.distance*factor;recipe.signature=null;recipe.status='stale';
     for(const entry of recipe.edgeWidths||[])entry.width*=factor;

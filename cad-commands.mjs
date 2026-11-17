@@ -3,6 +3,8 @@ import {moveSelection} from './selection.mjs';
 import {PANTS_COMMAND,validatePantsDelta} from './pants-command.mjs';
 import {syncAllowances} from './seams.mjs';
 import {syncNotches} from './notches.mjs';
+import {measure} from './measure.mjs';
+import {pieceList} from './piece-info.mjs';
 import {syncSeamChecks} from './seam-checks.mjs';
 import {syncGradingPlans} from './grading.mjs';
 import {syncMarkerPlans} from './marker.mjs';
@@ -11,7 +13,9 @@ import {findCommand,validateInput,commandSet,describeScene,COMMAND_SET_VERSION} 
 const copy=x=>JSON.parse(JSON.stringify(x));
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 // What a command can change, without the bookkeeping fields that validation and syncing rewrite.
-const fingerprint=p=>JSON.stringify([p.name,p.units,p.entities,p.groups,(p.seamAllowances||[]).map(r=>[r.id,r.baseEntityIds,r.outputIds.length,r.distance,r.widthMode,r.edgeWidths,r.join,r.corners||null]),p.metadata?.parametricDrafts||null]);
+const fingerprint=p=>JSON.stringify([p.name,p.units,p.entities,p.groups,(p.seamAllowances||[]).map(r=>[r.id,r.baseEntityIds,r.outputIds.length,r.distance,r.widthMode,r.edgeWidths,r.join,r.corners||null]),p.metadata?.parametricDrafts||null,
+  // what a grading plan by size table says (not what it remembers of the drawing): the grading commands change nothing else
+  (p.gradingPlans||[]).filter(g=>g.method==='table').map(g=>[g.id,g.name,g.baseSize,g.sizes.map(z=>[z.label,z.slot]),g.sizeTable.rows,g.anchors.map(a=>[a.entityId,a.index??null,a.between??null,a.between===undefined?null:a.at,Boolean(a.plain),a.x??null,a.y??null,a.axisX??null,a.axisY??null]),g.notchRules||[]])]);
 const finite=n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=100000;
 const point=p=>p&&Object.keys(p).sort().join(',')==='x,y'&&finite(p.x)&&finite(p.y);
 function keys(object,allowed){if(!object||typeof object!=='object'||Array.isArray(object)||Object.keys(object).some(k=>!allowed.includes(k)))throw Error('命令参数不受支持。');}
@@ -60,6 +64,12 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     }else throw Error('未知的编辑命令。');
     syncAllowances(next,makeId);syncNotches(next,makeId);syncSeamChecks(next);syncGradingPlans(next);syncMarkerPlans(next);
     validateProject(next);
+    // A locked piece stays exactly as it is, whatever the command; only unlocking may touch it.
+    if(type!=='piece.setLocked')for(const group of before.groups||[]){
+      if(!group.locked)continue;
+      const state=project=>{const now=(project.groups||[]).find(g=>g.id===group.id),ids=new Set(group.entityIds);return JSON.stringify([now||null,project.entities.filter(e=>ids.has(e.id))]);};
+      if(state(next)!==state(before))throw Error('裁片“'+group.name+'”已锁定，不能修改。要改它，先解锁。');
+    }
     if(fingerprint(next)===fingerprint(before))throw Error('命令没有产生修改。');
     return {next,summary,measurements,created};
   }
@@ -108,5 +118,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
   function execute(command){if(['history.undo','history.redo'].includes(command?.type)){keys(command,['schema','type','expectedRevision','parameters']);if(command.schema!=='zhiyi-cad-command/v1')throw Error('命令版本不受支持。');keys(command.parameters,[]);return historyCommand(command.type,command.expectedRevision);}return apply(preview(command).id);}
   const catalog=()=>({version:COMMAND_SET_VERSION,units:'mm',commands:commandSet.map(c=>copy({type:c.type,title:c.title,description:c.description,input_schema:c.input_schema}))});
   const scene=()=>({revision:getRevision(),...describeScene(copy(getProject()))});
-  return Object.freeze({describe,read,readProject:()=>copy(getProject()),preview,previewBatch,apply,execute,catalog,scene,clear:()=>plans.clear()});
+  // Reading only: measurements and the piece list never change the drawing and need no preview.
+  const measureNow=query=>measure(copy(getProject()),query),pieces=()=>pieceList(copy(getProject()));
+  return Object.freeze({describe,read,readProject:()=>copy(getProject()),preview,previewBatch,apply,execute,catalog,scene,measure:measureNow,pieces,clear:()=>plans.clear()});
 }

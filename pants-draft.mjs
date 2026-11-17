@@ -1,6 +1,6 @@
 import {bounds,length,validateProject,transform} from './geometry.mjs';
 import {refreshCurve} from './curves.mjs';
-import {generateAllowance,applyAllowance,syncAllowances} from './seams.mjs';
+import {generateAllowance,applyAllowance,syncAllowances,SHARP_CORNER_LIMIT} from './seams.mjs';
 
 export const DRAFT_COMMAND='pattern.draftStraightPants';
 export const DRAFT_SCHEMA='zhiyi-straight-pants-demo/v1';
@@ -20,8 +20,8 @@ export const draftFields={
     ['waistEase','腰围松量',20,0,120,'整圈加量'],
     ['hipEase','臀围松量',40,0,160,'整圈加量'],
     ['thighEase','大腿围松量',60,0,160,'单腿整圈加量'],
-    ['kneeCirc','成衣膝围',440,280,800,'单腿整圈；默认与脚口一致'],
-    ['hemCirc','成衣脚口围',440,280,800,'单腿整圈'],
+    ['kneeCirc','成衣膝围',440,280,800,'单腿整圈；直筒裤与脚口相同'],
+    ['hemCirc','成衣脚口围',440,280,800,'单腿整圈，等于前后两片脚口宽之和'],
     ['riseEase','裆深放松',10,0,40,'竖直加量'],
     ['seamAllowance','一般缝份',10,0,30,'0 表示该边不加缝份'],
     ['hemAllowance','脚口折边',30,0,60,'脚口边单独设置'],
@@ -105,7 +105,7 @@ export function draftStraightPants(input,{makeId=()=>crypto.randomUUID()}={}){
     // Even a net-only draft must have a closed, simple outline.
     generateAllowance(project,boundary.map(e=>e.id),{distance:.1});
     if(r.seamAllowance||r.hemAllowance){
-      applyAllowance(project,{name:label,entityIds:boundary.map(e=>e.id)},{distance:Math.max(r.seamAllowance,r.hemAllowance),widthMode:'edges',edgeWidths:boundary.map(e=>({entityId:e.id,segmentIndex:null,width:e===hemLine?r.hemAllowance:r.seamAllowance})),join:'miter',miterLimit:2},makeId);
+      applyAllowance(project,{name:label,entityIds:boundary.map(e=>e.id)},{distance:Math.max(r.seamAllowance,r.hemAllowance),widthMode:'edges',edgeWidths:boundary.map(e=>({entityId:e.id,segmentIndex:null,width:e===hemLine?r.hemAllowance:r.seamAllowance})),join:'miter',miterLimit:SHARP_CORNER_LIMIT},makeId);
     }
     pieces.push({name:label,groupId:group.id,waistGrossMm:length(waist),dartMm:dart,waistNetMm:length(waist)-dart,hipWidthMm:length(hipGuide),thighFlatMm:length(thighGuide),kneeWidthMm:length(kneeGuide),hemWidthMm:length(hemLine),sideLengthMm:upperSide+length(sideBottom),inseamMm:length(innerUpper)+length(innerBottom),crotchArcMm:length(crotch)+length(centerSeam),verticalHemMm:bottom,extensionMm:ext,hemId:hemLine.id});
     const own=project.entities.filter(e=>group.entityIds.includes(e.id)),box=bounds(own),offset=index?(bounds(project.entities.filter(e=>!group.entityIds.includes(e.id))).maxX+100-box.minX):-box.minX+30;

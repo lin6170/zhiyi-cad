@@ -16,6 +16,8 @@ export function decodeDxfBytes(input){
   const labels={ANSI_936:'gb18030',ANSI_950:'big5',ANSI_932:'shift_jis',ANSI_949:'euc-kr',ANSI_874:'windows-874',UTF_8:'utf-8',UTF8:'utf-8'};
   for(let i=1250;i<=1258;i++)labels['ANSI_'+i]='windows-'+i;
   const modern=version&&Number(version.slice(2))>=1021,encoding=bom||modern?'utf-8':codePage?labels[codePage.toUpperCase()]:'windows-1252';
+  // A file that names no code page (ET's piece files have no HEADER at all) is read as UTF-8 when it is valid UTF-8, otherwise as GBK when it is valid GBK, which is what ET writes; only then as Western text.
+  if(!bom&&!modern&&!codePage&&bytes.some(value=>value>=0x80))for(const guess of ['utf-8','gb18030']){try{return {text:new TextDecoder(guess,{fatal:true}).decode(bytes),encoding:guess,codePage:null,version,guessed:true};}catch{/* try the next one */}}
   if(!encoding)throw new Error('暂不支持 DXF 字符编码 '+codePage+'，请转存 UTF-8 DXF');
   try{return {text:new TextDecoder(encoding,{fatal:true}).decode(bytes),encoding,codePage,version};}catch{throw new Error('DXF 字节与声明编码 '+(codePage||encoding)+' 不一致，请检查编码后重试');}
 }

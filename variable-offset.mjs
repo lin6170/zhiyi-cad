@@ -4,7 +4,17 @@ import { assertSimplePolygon } from './polygon.mjs';
 const cross=(a,b)=>a.X*b.Y-a.Y*b.X;
 const sub=(a,b)=>({X:a.X-b.X,Y:a.Y-b.Y});
 const add=(a,b,f=1)=>({X:a.X+b.X*f,Y:a.Y+b.Y*f});
-function supportEnvelope(path,widths,tangent,normal,direction=1){
+/**
+ * v67: two edges that run on within 15 degrees of each other meet in a smooth joint. Where the seam width changes there, ET does not
+ * carry the two seam lines on until they meet but draws a step (its corner record type 3): the wider seam line ends at its own offset
+ * of the joint point and a straight line runs on along the wider edge's normal through the joint to the narrower seam line. Measured
+ * in ET 2017: bends of 5 to 14 degrees gave steps, 15 degrees an ordinary corner.
+ */
+export const SMOOTH_JOINT_DEGREES=15;
+export const SMOOTH_JOINT_COS=Math.cos(SMOOTH_JOINT_DEGREES*Math.PI/180);
+// where the line through p along d meets the line through q along e, or null
+const meet=(p,d,q,e)=>{const den=cross(d,e);if(Math.abs(den)<1e-12)return null;return add(p,d,cross(sub(q,p),e)/den);};
+function supportEnvelope(path,widths,tangent,normal,direction=1,collapse=false){
   const count=path.length;
   if(direction>0&&tangent.every((t,i)=>cross(tangent[(i+count-1)%count],t)>=-1e-12)){
     // Every nonuniform convex offset lies inside the uniform unlimited-miter
@@ -20,16 +30,33 @@ function supportEnvelope(path,widths,tangent,normal,direction=1){
     for(let i=0;i<count&&clipped.length;i++)clipped=clipHalfPlane(clipped,path[i],tangent[i],-widths[i]);
     return Clipper.Clipper.CleanPolygon(clipped.map(p=>({X:Math.round(p.X),Y:Math.round(p.Y)})),.5);
   }
-  const corners=path.map((v,j)=>{
-    const k=(j+count-1)%count,a=add(v,normal[k],widths[k]),b=add(v,normal[j],widths[j]),turn=cross(tangent[k],tangent[j]);
-    if(Math.abs(turn)<1e-12)return {before:a,after:b};
+  // where the offset lines of two edges meet; k comes before j, and they need not be neighbours once edges have been left out
+  const REVERSED='逐边宽度使局部边消失或反向，请减小宽度差或改用统一宽度';
+  const cornerOf=(k,j)=>{
+    const a=add(path[(k+1)%count],normal[k],widths[k]),b=add(path[j],normal[j],widths[j]),turn=cross(tangent[k],tangent[j]);
+    if(Math.abs(turn)<1e-12){if((k+1)%count!==j)throw new Error(REVERSED);return {before:a,after:b};}
     const intersection=add(a,tangent[k],cross(sub(b,a),tangent[j])/turn);
     if(Math.max(Math.abs(intersection.X),Math.abs(intersection.Y))>1e14)throw new Error('变宽交接过于接近平行，无法稳定计算');
     return {before:intersection,after:intersection};
-  });
-  for(let i=0;i<count;i++){
-    const edge=sub(corners[(i+1)%count].before,corners[i].after);
-    if(edge.X*tangent[i].X+edge.Y*tangent[i].Y< -1e-6)throw new Error('逐边宽度使局部边消失或反向，请减小宽度差或改用统一宽度');
+  };
+  // Beside a corner where the width changes, a short piece of a sampled curve can end up behind the corner: its offset runs
+  // backwards. With `collapse` such a piece is left out and its neighbours meet instead, the way the allowance really runs
+  // (the narrower side goes on straight until it meets the wider one). Only pieces that are short against the allowance are left
+  // out; an edge of the outline itself that vanishes is a width that does not fit, and is refused as before.
+  const widest=Math.max(...widths.map(Math.abs));let live=path.map((_,i)=>i),corners,left=0;
+  for(;;){
+    const n=live.length;if(n<3)throw new Error(REVERSED);
+    corners=live.map((j,at)=>cornerOf(live[(at+n-1)%n],j));
+    let worst=-1,most=-1e-6;
+    for(let at=0;at<n;at++){const i=live[at],edge=sub(corners[(at+1)%n].before,corners[at].after),along=edge.X*tangent[i].X+edge.Y*tangent[i].Y;if(along<most){most=along;worst=at;}}
+    if(worst<0)break;
+    if(!collapse)throw new Error(REVERSED);
+    // a piece of a sampled curve runs on smoothly into a neighbour (the chords of a curve turn by a few degrees); an edge with a
+    // real corner at both ends is an edge of the outline
+    const i=live[worst],before=live[(worst+n-1)%n],after=live[(worst+1)%n],length=Math.hypot(path[(i+1)%count].X-path[i].X,path[(i+1)%count].Y-path[i].Y);
+    const smooth=(a,b)=>Math.abs(cross(tangent[a],tangent[b]))<=.09&&tangent[a].X*tangent[b].X+tangent[a].Y*tangent[b].Y>0;
+    left+=length;if(!(smooth(before,i)||smooth(i,after))||length>2*widest||left>6*widest)throw new Error(REVERSED);
+    live.splice(worst,1);
   }
   const envelope=[];
   for(const corner of corners)for(const p of [corner.before,corner.after]){
@@ -113,14 +140,21 @@ export function variableOffset(path,widths,direction,config){
     const rounded=clipped.map(p=>({X:Math.round(p.X),Y:Math.round(p.Y)}));
     return rounded.length>=3&&Clipper.Clipper.Area(rounded)>0?[rounded]:[];
   }
-  let envelope;
+  // v67: steps where the width changes at a smooth joint (see SMOOTH_JOINT_COS). An outline with a step is not the intersection of the
+  // edges' half-planes, so the envelope, which would cut the wider part away, is not used for it.
+  const steps=path.map((_,j)=>{const k=(j+count-1)%count;return Math.abs(widths[k]-widths[j])>1e-3&&tangent[k].X*tangent[j].X+tangent[k].Y*tangent[j].Y>SMOOTH_JOINT_COS;});
+  let envelope=null;
+  if(!steps.some(Boolean)){
   try{envelope=supportEnvelope(path,widths,tangent,normal);}
   catch(error){
     // The envelope test looks at every chord of a sampled curve, so a concave corner next to a curve fails it
     // although the allowance itself is sound. Bands joined at the convex corners give the outline in that case.
     const parts=config.join==='miter'?bandUnion(path,widths,tangent,normal,config):null;
     if(parts)return parts;
-    throw error;
+    // Last: the same test with short pieces beside a corner left out (see supportEnvelope). Found with a real pattern whose
+    // 24 mm wide facing could not get its allowance in the larger sizes.
+    try{envelope=supportEnvelope(path,widths,tangent,normal,1,true);}catch{throw error;}
+  }
   }
   const raw=[];
   function push(p){
@@ -131,6 +165,12 @@ export function variableOffset(path,widths,direction,config){
   }
   for(let j=0;j<count;j++){
     const k=(j+count-1)%count,v=path[j],a=add(v,normal[k],widths[k]),b=add(v,normal[j],widths[j]),turn=cross(tangent[k],tangent[j]);
+    if(steps[j]){
+      // the step runs along the wider edge's normal through the joint point to the narrower seam line
+      if(widths[k]>widths[j]){push(a);push(meet(v,normal[k],b,tangent[j])||b);}
+      else{push(meet(v,normal[j],a,tangent[k])||a);push(b);}
+      continue;
+    }
     if(Math.abs(turn)<1e-12){push(a);push(b);continue;}
     if(turn<0){push(a);push(v);push(b);continue;}
     const u=cross(sub(b,a),tangent[j])/turn,intersection=add(a,tangent[k],u);
@@ -142,6 +182,7 @@ export function variableOffset(path,widths,direction,config){
   const clipper=new Clipper.Clipper(),solution=[];
   clipper.AddPath(raw,Clipper.PolyType.ptSubject,true);
   clipper.Execute(Clipper.ClipType.ctUnion,solution,Clipper.PolyFillType.pftPositive,Clipper.PolyFillType.pftPositive);
+  if(!envelope)return solution;
   // Unequal radial/square joins can cross a neighbouring offset support.
   // Clip to the unlimited-miter region, without forcing a zero-width corner
   // to its miter intersection (which would make later widening shrink it).

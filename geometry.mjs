@@ -120,7 +120,7 @@ export function validateProject(value) {
     recipeIds.add(recipe.id);
     Object.assign(recipe,normalizeEdgeWidths(recipe,recipe.baseEntityIds));
     if(recipe.widthMode==='edges')value.version=Math.max(value.version,5);
-    for(const id of recipe.outputIds){const entity=byId.get(id);if(outputs.has(id)||!entity||entity.derivedFrom!==recipe.id||!entity.closed||entity.type==='text'||entity.curve)throw new Error('缝份输出引用无效');outputs.add(id);}
+    for(const id of recipe.outputIds){const entity=byId.get(id);if(outputs.has(id)||!entity||entity.derivedFrom!==recipe.id||(!entity.closed&&entity.seamRole!=='fold'&&entity.seamRole!=='mark')||entity.type==='text'||entity.curve)throw new Error('缝份输出引用无效');outputs.add(id);}
     if(!Number.isFinite(recipe.distance)||Math.abs(recipe.distance)<.001||Math.abs(recipe.distance)>1e6||!['miter','round','square'].includes(recipe.join)||!Number.isFinite(recipe.miterLimit)||recipe.miterLimit<2||recipe.miterLimit>20||!Number.isFinite(recipe.gapTolerance)||recipe.gapTolerance<0||recipe.gapTolerance>10||!['curveTolerance','arcTolerance'].every(key=>Number.isFinite(recipe[key])&&recipe[key]>=.001&&recipe[key]<=.5))throw new Error('缝份参数无效');
     if(recipe.baseEntityIds.some(id=>byId.get(id)?.derivedFrom||byId.get(id)?.notchFrom))throw new Error('不支持派生图元之间的循环或嵌套关联');
     recipe.signature=null;recipe.status='stale';
