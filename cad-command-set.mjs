@@ -15,6 +15,7 @@ import { applyNotches } from './notches.mjs';
 import { seamEdgeDefinitions, edgeKey, edgeWidthMap } from './seam-widths.mjs';
 import { PAIR_KINDS } from './seam-corners.mjs';
 import { draftStraightPants, draftFields, validateDraftInput, DRAFT_COMMAND, DRAFT_SCHEMA } from './pants-draft.mjs';
+import { PANTS_COMMAND } from './pants-command.mjs';
 import { transform } from './geometry.mjs';
 import { LIMIT, number, point, idList, text, object, layer, validateInput, requireMm, samePoint, entityOf, groupOf, addEntity, assertWholePieces, existingIds, round } from './cad-command-kit.mjs';
 import { constructCommands } from './cad-command-construct.mjs';
@@ -488,6 +489,10 @@ export const commandSet = [
   { type: 'pattern.updateDraft', title: '按新尺寸重算纸样', description: '修改已生成直筒裤的部分尺寸或规则，整套纸样在原位置重新生成。给的是新的数值，不是加减多少；现在的数值在 scene.drafts 里这套纸样的 input 中。纸样被手工改过时会拒绝，除非 discardManualEdits 为 true。只是移动、旋转过裁片不算手工修改。只改脚口不会带动膝围，反过来也一样；原来两者相同而只改了一个时，在 assumptions 里告诉师傅另一个保持原值、裤腿不再上下一样宽。',
     input_schema: { ...draftSchema(true), properties: { ...draftSchema(true).properties, draftId: text(120, '要重算的纸样，省略时为最近生成的一套'), discardManualEdits: { type: 'boolean', description: '是否丢弃生成后的手工修改' } } },
     run: updateDraft },
+  // v73: the length of an ET pants file opened in the page: the command of 自动改裤长, run by cad-commands.mjs with the pants
+  // session (the panel's rules say which pieces, knee lines and hems there are)
+  { type: PANTS_COMMAND, title: '自动改裤长', description: '给打开的 ET 裤子文件改裤长，和顶栏“自动改裤长”是同一个功能：膝线以上和脚口宽都不变，膝线到裤脚这一段加长（deltaMm 为正）或缩短（为负），侧缝、内缝、缝份和折边线跟着变。只用于原样打开的 ET 文件（scene.units 不是 mm），并且要先在“自动改裤长”窗口里为这份裤子定好或载入改版规则（哪片是前片、后片，哪条是膝线、裤脚）：scene.pantsLength.rules 是规则的名称，为 null 时还没有规则，这时不要用这条命令，告诉师傅先在“自动改裤长”里指定。相对原文件的累计变化不能超过 ±100 mm（scene.pantsLength.totalDeltaMm 是文件里已经累计的）；一次打开只改一次，scene.pantsLength.changed 为 true 时这条命令会被拒绝（changeMm 是已经改的量），告诉师傅先撤销上一次（撤销以后可以把两次的量合起来一次改），或者保存改版文件后重新打开它再改。deltaMm 是毫米，最多一位小数，不能为 0。按尺寸生成的直筒裤改裤长不用这条，用“按新尺寸重算纸样”给新的 length。改好后要存成 ET 文件时，告诉师傅在“自动改裤长”里点“保存改版 PRJ 副本”。',
+    input_schema: object({ deltaMm: number(-100, 100, '裤长加长多少（正数）或缩短多少（负数），毫米，最多一位小数，不能为 0') }, ['deltaMm']), external: true },
 ];
 const byType = new Map(commandSet.map(command => [command.type, command]));
 export const findCommand = type => byType.get(type) || null;

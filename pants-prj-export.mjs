@@ -32,13 +32,17 @@ export async function createPantsPrjSession(input,filename,project,profile){
   if(v5&&(!encoded||parsed.metadata.sizeVariants?.length!==1||!(userRule?[1,129]:[1]).includes(parsed.metadata.sizeVariants[0].flags)))throw Error('此 v5 母版变体尚未验收。');
   const records=v5?readV5References(bytes,parsed,{verifiedPantsTemplate:true}):readPrjCurveReferences(bytes,parsed),byId=new Map(records.map(r=>[r.entity.source.sourceId,r]));
   const originalView=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-  let plannedDelta=null;
+  let plannedDelta=null,lastResult=null;
   function plan(current,parameters){
     if(canonical(current)!==canonical(baseline))throw Error('工程已经修改，请撤销到原始母版再生成改版计划。');
     validatePantsDelta(parameters.deltaMm);
     if(Math.abs(continuation.totalDeltaMm+parameters.deltaMm)>100.00001)throw Error('改后相对原母版的累计变化须在 -100 至 +100 mm 内。');
-    const result=userRule?planUserPantsContinuation(baseline,continuation,parameters.deltaMm):continuation.baseline?planPantsContinuation(baseline,profile,continuation,parameters.deltaMm):planPantsGeometry(baseline,profile,parameters);validateProject(result.project);plannedDelta=parameters.deltaMm;return result;
+    const result=userRule?planUserPantsContinuation(baseline,continuation,parameters.deltaMm):continuation.baseline?planPantsContinuation(baseline,profile,continuation,parameters.deltaMm):planPantsGeometry(baseline,profile,parameters);validateProject(result.project);plannedDelta=parameters.deltaMm;lastResult=result;return result;
   }
+  // v73: what the assistant needs to know of the session: whether the drawing is still the file as opened, and the change it last
+  // planned when that change is what the drawing now shows (so that the panel can offer to save it, as after its own apply)
+  const isOriginal=current=>canonical(current)===canonical(baseline);
+  const appliedChange=current=>lastResult&&plannedDelta!==null&&canonical(current)===canonical(lastResult.project)?{deltaMm:plannedDelta,changes:lastResult.changes,measurements:lastResult.measurements,summary:lastResult.summary}:null;
   function exportPrj(current){
     if(plannedDelta===null)throw Error('请先生成改版计划。');
     const result=plan(baseline,{deltaMm:plannedDelta});
@@ -78,5 +82,5 @@ export async function createPantsPrjSession(input,filename,project,profile){
     }
     return output;
   }
-  return Object.freeze({filename,profileName:profile.name,plan,exportPrj,sourceSha256,totalDeltaMm:continuation.totalDeltaMm,layout:v5?'ET v5':'原始 PRJ'});
+  return Object.freeze({filename,profileName:profile.name,plan,exportPrj,sourceSha256,totalDeltaMm:continuation.totalDeltaMm,layout:v5?'ET v5':'原始 PRJ',isOriginal,appliedChange,mmPerUnit:profile.mmPerSourceUnit});
 }

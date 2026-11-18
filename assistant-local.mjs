@@ -6,6 +6,7 @@
  * read as centimetres and the reply says so.
  */
 import { draftFields, defaultDraftInput, DRAFT_COMMAND } from './pants-draft.mjs';
+import { PANTS_COMMAND } from './pants-command.mjs';
 
 export const PLAN_SCHEMA = 'zhiyi-agent-plan/v1';
 export const LOCAL_PLANNER = Object.freeze({ id: 'local', name: '本机指令', version: 'zhiyi-local-planner/v1' });
@@ -194,8 +195,26 @@ function discarding(context, notes) {
   notes.unshift('会丢弃这套纸样生成后的手工修改，例如单独改过的缝份、旋转、镜像和改名。');
   return { discardManualEdits: true };
 }
+// v73: an ET pants file opened as it is changes its length by 自动改裤长 (pattern.extendPantsHem), under the rules set or loaded in that
+// panel (which pieces, knee lines and hems there are). Only a change by so much: the file does not record a 裤长 to set.
+function planPantsLength(pants, changes, rest) {
+  const strange = unrecognised(rest);
+  if (strange) refuse('有一部分没有认出来：“' + strange + '”。打开的 ET 裤子文件我只能改裤长，例如“裤长加 2 厘米”“裤长减 1 厘米”。');
+  if (!pants.rules) refuse('这份 ET 文件还没有改裤长的规则，所以我不知道哪片是前片、后片，哪条是膝线、裤脚。请先点顶栏的“自动改裤长”，在窗口里指定前后片、膝线和裤脚（或载入已有的规则），然后再对我说“裤长加 2 厘米”。');
+  if (changes.length !== 1) refuse('裤长在这句话里出现了不止一次（' + changes.map(c => '“' + c.text + '”').join('、') + '），请只说一次。');
+  const change = changes[0];
+  if (change.mode === 'set') refuse('打开的 ET 裤子文件只能说加长或缩短多少，和“自动改裤长”一样，例如“裤长加 2 厘米”“裤长减 1 厘米”；文件里没有记裤长是多少。');
+  if (pants.changed) refuse('这份文件打开以后已经改过一次裤长' + (pants.changeMm ? '（' + (pants.changeMm > 0 ? '加长 ' : '缩短 ') + cm(Math.abs(pants.changeMm)) + ' cm）' : '') + '。要再改，先撤销上一次，再把两次的量合起来说一次；或者在“自动改裤长”里点“保存改版 PRJ 副本”，打开存下的文件再改。');
+  const notes = [], deltaMm = (change.mode === 'up' ? 1 : -1) * resolveValue(change, notes, false), total = (pants.totalDeltaMm || 0) + deltaMm;
+  if (!deltaMm) refuse('加长或缩短的量不能是 0。');
+  if (Math.abs(total) > (pants.limitMm || 100) + 1e-6) refuse('相对原文件的累计变化不能超过 ' + cm(pants.limitMm || 100) + ' cm' + (pants.totalDeltaMm ? '；这份文件已经累计' + (pants.totalDeltaMm > 0 ? '加长 ' : '缩短 ') + cm(Math.abs(pants.totalDeltaMm)) + ' cm' : '') + '，“' + change.text + '”以后会是 ' + cm(Math.abs(total)) + ' cm。');
+  notes.push('按“自动改裤长”的规则“' + pants.rules + '”改：膝线以上和脚口宽不变，膝线到裤脚这一段' + (deltaMm > 0 ? '加长' : '缩短') + '，侧缝、内缝、缝份和折边线跟着变。');
+  notes.push('要存成 ET 文件，点顶栏的“自动改裤长”，在窗口里点“保存改版 PRJ 副本”。');
+  return plan('裤长' + (deltaMm > 0 ? '加长 ' : '缩短 ') + cm(Math.abs(deltaMm)) + ' cm（自动改裤长）。', { steps: [{ type: PANTS_COMMAND, parameters: { deltaMm } }], assumptions: notes });
+}
 function planDraft(sentence, scene, context, changes, rest) {
   const drafts = scene.drafts || [], draft = drafts.at(-1) || null;
+  if (!draft && scene.pantsLength && !NEW_PANTS.test(sentence) && changes.length && changes.every(c => c.term.key === 'length')) return planPantsLength(scene.pantsLength, changes, rest);
   const creating = NEW_PANTS.test(sentence) || (!draft && changes.length > 0 && changes.every(c => c.mode === 'set') && /裤/.test(sentence));
   if (!creating && !draft) refuse('画布上还没有按尺寸生成的纸样，所以没有可以修改的尺寸。可以先说“画一条直筒裤，腰围76 臀围96 裤长102”。');
   const strange = unrecognised(rest);

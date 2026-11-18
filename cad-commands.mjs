@@ -32,7 +32,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     {type:PANTS_COMMAND,parameters:['deltaMm: -100..100, nonzero, 0.1 mm'],requires:'verified private template profile'},
     {type:DRAFT_COMMAND,parameters:['measurements: body dimensions in mm','rules: demonstration formula parameters'],requires:'empty canvas or millimetre project; no PRJ template'},
     {type:'history.undo',parameters:[]},{type:'history.redo',parameters:[]},
-    ...commandSet.filter(c=>c.type!==DRAFT_COMMAND).map(c=>({type:c.type,title:c.title,parameters:'catalog()'}))
+    ...commandSet.filter(c=>c.type!==DRAFT_COMMAND&&c.type!==PANTS_COMMAND).map(c=>({type:c.type,title:c.title,parameters:'catalog()'}))
   ],catalog:COMMAND_SET_VERSION,contract:'preview({schema,type,expectedRevision,parameters}) or previewBatch({schema,expectedRevision,steps}) → apply(planId); failure leaves project/history unchanged'};}
   function read(){return {revision:getRevision(),name:getProject().name,units:getProject().units,entityCount:getProject().entities.length,groupCount:getProject().groups.length,...history()};}
   // Run one command on a detached project. The result is synced and validated before anyone sees it.
@@ -117,7 +117,12 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
   function historyCommand(type,expected){idle();revision(expected);const h=history();if(type==='history.undo'?!h.canUndo:!h.canRedo)throw Error(type==='history.undo'?'没有可以撤销的修改。':'没有可以重做的修改。');plans.clear();(type==='history.undo'?undo:redo)();return read();}
   function execute(command){if(['history.undo','history.redo'].includes(command?.type)){keys(command,['schema','type','expectedRevision','parameters']);if(command.schema!=='zhiyi-cad-command/v1')throw Error('命令版本不受支持。');keys(command.parameters,[]);return historyCommand(command.type,command.expectedRevision);}return apply(preview(command).id);}
   const catalog=()=>({version:COMMAND_SET_VERSION,units:'mm',commands:commandSet.map(c=>copy({type:c.type,title:c.title,description:c.description,input_schema:c.input_schema}))});
-  const scene=()=>({revision:getRevision(),...describeScene(copy(getProject()))});
+  // v73: what the assistant needs to change the length of an ET pants file opened as it is (自动改裤长): the rules of the pants
+  // session, what the file has already changed (a session plans from the file as opened, within 100 mm), whether it changed since
+  const pantsScene=()=>{const project=getProject();if(project.units==='mm')return {};const session=getPantsSession?.();
+    if(!session)return {pantsLength:{rules:null}};const changed=!session.isOriginal(project);
+    return {pantsLength:{rules:session.profileName,totalDeltaMm:session.totalDeltaMm,changed,changeMm:changed?(session.appliedChange(project)?.deltaMm??null):0,mmPerUnit:session.mmPerUnit,limitMm:100}};};
+  const scene=()=>({revision:getRevision(),...describeScene(copy(getProject())),...pantsScene()});
   // Reading only: measurements and the piece list never change the drawing and need no preview.
   const measureNow=query=>measure(copy(getProject()),query),pieces=()=>pieceList(copy(getProject()));
   return Object.freeze({describe,read,readProject:()=>copy(getProject()),preview,previewBatch,apply,execute,catalog,scene,measure:measureNow,pieces,clear:()=>plans.clear()});

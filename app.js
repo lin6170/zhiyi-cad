@@ -42,7 +42,7 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=72';
+import { createCadCommands } from './cad-commands.mjs?v=73';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
 import { createConstructPanel } from './construct-ui.mjs';import { createSmartPen } from './smart-pen-ui.mjs';
@@ -1298,7 +1298,7 @@ draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRe
 const draftEntry=document.createElement('button');draftEntry.id='draft-open';draftEntry.textContent='尺寸自动制版';draftEntry.setAttribute('aria-haspopup','dialog');draftEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');draftPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(draftEntry);
 const draftWelcome=document.createElement('button');draftWelcome.id='welcome-draft';draftWelcome.textContent='输入尺寸，生成新纸样';draftWelcome.className='primary';draftWelcome.onclick=()=>draftEntry.click();$('welcome-open').before(draftWelcome);
 assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),getSelection:()=>[...selected],
-  prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>refresh(),
+  prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>{refresh();pantsPanel?.noteApplied();},   /* v73: a pants length the assistant changed can be saved from the 自动改裤长 panel */
   hostActions:{'view.fit':()=>{refresh();fit();},'file.savePrj':()=>{refresh();fit();prjNewPanel.open();},'file.exportDxf':()=>{$('export').click();},'file.saveProject':()=>{save();}}});
 constructPanel=createConstructPanel({commands:cadCommands,host:$('workspace'),getProject:()=>project,getSelection:()=>selected,getTool:()=>tool,setTool,render,notify});
 smartPen=createSmartPen({commands:cadCommands,host:$('workspace'),getProject:()=>project,getTool:()=>tool,setTool,render,notify,editPoints:id=>{selected=new Set([id]);setTool('node');refresh();},isVisible:entity=>{const seen=viewMenu?.view();return !seen||seen.pickable(entity);}});
