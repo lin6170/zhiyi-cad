@@ -1132,6 +1132,80 @@ textarea {
 #grade-table-rows th.base {
   color:var(--color-warning-text);
 }
+/* v71: ET's five size series, the 纸样尺寸 column and the rule table of the grading panel */
+#grade-series,#grade-rule-rows {
+  overflow-x:auto;
+  margin-top:6px;
+}
+#grade-series table,#grade-rule-rows table {
+  border-collapse:collapse;
+  font-size:var(--text-xs);
+}
+#grade-series th,#grade-series td,#grade-rule-rows th,#grade-rule-rows td {
+  padding:2px 3px;
+  white-space:nowrap;
+}
+#grade-series th:first-child {
+  text-align:left;
+  color:var(--color-muted-foreground);
+}
+#grade-series tr.base th:first-child {
+  color:var(--color-warning-text);
+}
+#grade-series input {
+  width:36px;
+  padding:2px 3px;
+}
+#grade-series button {
+  min-height:22px;
+  padding:1px 6px;
+  font-size:var(--text-xs);
+}
+#grade-series button.in-use {
+  border-color:var(--color-primary);
+  background:var(--color-selected);
+  color:var(--color-selected-foreground);
+}
+#grade-table-rows th.pattern {
+  color:var(--color-info-text);
+}
+#grade-rule-rows input {
+  width:84px;
+  padding:2px 4px;
+}
+#grade-rule-rows button {
+  padding:1px 6px;
+  font-size:var(--text-xs);
+}
+#grade-rule-rows td.empty {
+  white-space:normal;
+  color:var(--color-subtle-foreground);
+}
+#grade-rule-library .pair {
+  margin-top:6px;
+}
+.file-button {
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:24px;
+  border:1px solid var(--color-border-strong);
+  background:var(--color-card);
+  color:var(--color-text-secondary);
+  border-radius:var(--radius-md);
+  padding:7px 12px;
+  cursor:pointer;
+}
+.file-button:hover {
+  background:var(--color-hover);
+}
+.file-button input[type=file] {
+  position:absolute;
+  inset:0;
+  opacity:0;
+  cursor:pointer;
+}
 .grade-anchor {
   margin-top:8px;
   padding-top:6px;

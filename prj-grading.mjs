@@ -85,7 +85,10 @@ export function carryEtGrading({ parsed, project, made, curves, tails, makeId, n
     }
   }
   for (const node of usable.keys()) if (!placed.has(node)) { report.notCarried++; fail('有规则所在的线没有带入（缝边线一类由网页重新生成的线）'); }
-  if (!anchors.some(anchor => !anchor.plain)) { if (moved.length) fail('没有一条规则能带入'); return report; }
+  // v71: a file with size names or a size table but no rules yet keeps them: the plan carries the names of the five series and
+  // the size table without rules, and they are written back
+  const tableOnly = !anchors.some(anchor => !anchor.plain);
+  if (tableOnly && moved.length) { fail('没有一条规则能带入'); return report; }
 
   // ---- the sizes: those of the series in use, or of the series with the most names when that one names the base size only
   let series = sizes.series[sizes.activeSeries];
@@ -112,7 +115,7 @@ export function carryEtGrading({ parsed, project, made, curves, tails, makeId, n
   if (locks.length) value.locks = locks; if (lockedSizes.length) value.lockedSizes = lockedSizes;
   let plan; try { plan = normalizeGradingPlan(value); } catch (error) { fail('放码方案没有建成：' + error.message); report.rules = 0; report.followers = 0; report.dividingPoints = 0; return report; }
   const id = makeId(); (project.gradingPlans ||= []).push({ id, ...plan }); project.version = Math.max(project.version, 8);
-  Object.assign(report, { carried: true, locks: (plan.locks || []).filter(lock => !lock.layer).length, lockedSizes: (plan.lockedSizes || []).map(sizeId => plan.sizes.find(size => size.id === sizeId).label), notchRules: plan.notchRules.length, planId: id, planName: plan.name, seriesUsed: series.name, sizes: plan.sizes.map(size => size.label), baseSize: plan.baseSize, tableRows: plan.sizeTable.rows.length,
+  Object.assign(report, { carried: true, ...(tableOnly ? { tableOnly: true } : {}), locks: (plan.locks || []).filter(lock => !lock.layer).length, lockedSizes: (plan.lockedSizes || []).map(sizeId => plan.sizes.find(size => size.id === sizeId).label), notchRules: plan.notchRules.length, planId: id, planName: plan.name, seriesUsed: series.name, sizes: plan.sizes.map(size => size.label), baseSize: plan.baseSize, tableRows: plan.sizeTable.rows.length,
     sizeOrder: [{ label: plan.baseSize, slot: plan.sizeTable.baseSlot }, ...plan.sizes].sort((a, b) => a.slot - b.slot).map(size => size.label) });
   return report;
 }

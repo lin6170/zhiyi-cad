@@ -9,6 +9,8 @@ import { stationsOf, placeOnLine, ruleDisplacement } from './grading-table.mjs';
 import { parseFormula, formulaNames } from './size-formula.mjs';
 import { alignmentPlace, bakeAlignment, alignedMove } from './grading-align.mjs';
 import { lockPoints, unlockPoints, lockSize, moveInSize, stationsAtPlace, SAME_MM as LOCK_MM } from './grading-locks.mjs';
+import { SERIES_LETTERS, seriesIndex, useSeries, nameSeries, describeSeries } from './size-series.mjs';
+import { PATTERN_SLOT } from './size-input.mjs';
 
 const REACH_MM = .5, SAME_PLACE_MM = .05;   // how near a given place must be to a point or to the line; when two points count as one place
 const formula = description => ({ type: 'string', minLength: 0, maxLength: 300, description });
@@ -68,14 +70,14 @@ function ruleAt(project, value, found) {
 const movesOf = (plan, rule) => plan.sizes.slice().sort((a, b) => a.slot - b.slot).map(size => { const d = ruleDisplacement(plan, size, rule); return { size: size.label, dxMm: round(d.dx), dyMm: round(d.dy) }; });
 
 export const gradingCommands = [
-  { type: 'grade.setSizes', title: '设置号型', description: '按尺寸表放码（ET 的做法）的第一步：给出从小到大的全部号型名称，并指出其中的基码。图里还没有这种放码方案时会建立一个，它管整张图；已经有时按新的名单增减号型，尺寸表和规则保留；新加的号型，尺寸表每一项按该项基码的数值和档差顺延出数值（档差是建立这一项或最后一次给 step 时的每码增量；场景里只有各码的数值，均匀时就是相邻两码的差），不用再逐项填，个别码要不一样时再用“尺寸表项目”改。之后用“尺寸表项目”填尺寸表，用“放码规则”给点设规则。',
+  { type: 'grade.setSizes', title: '设置号型', description: '按尺寸表放码（ET 的做法）的第一步：给出从小到大的全部号型名称，并指出其中的基码。这份名单就是正在用的那组号型系列的名称（ET 号型名称里 A 到 E 正在用的一组，见“号型系列”）。图里还没有这种放码方案时会建立一个，它管整张图；已经有时按新的名单增减号型，尺寸表和规则保留；新加的号型，尺寸表每一项按该项基码的数值和档差顺延出数值（档差是建立这一项或最后一次给 step 时的每码增量；场景里只有各码的数值，均匀时就是相邻两码的差），不用再逐项填，个别码要不一样时再用“尺寸表项目”改。之后用“尺寸表项目”填尺寸表，用“放码规则”给点设规则。',
     input_schema: object({ sizes: { type: 'array', description: '全部号型的名称，从小到大，含基码', items: text(50, '号型名称'), minItems: 2, maxItems: 13 }, base: text(50, '基码的名称，必须在名单里') }, ['sizes', 'base']),
     run(project, p, env) {
       requireMm(project);
       const names = p.sizes.map(name => name.trim()); if (names.some(name => !name) || new Set(names).size !== names.length) throw new Error('号型名称不能重复，也不能是空的。');
       const at = names.indexOf(p.base.trim()); if (at < 0) throw new Error('基码“' + p.base + '”不在号型名单里。');
       const existing = tablePlanOf(project), value = existing ? open(existing) : JSON.parse(JSON.stringify(createTablePlan(project, env.makeId))), table = value.sizeTable, baseSlot = table.baseSlot;
-      if (baseSlot - at < 0 || baseSlot + names.length - 1 - at > 49) throw new Error('号型太多，排不进号型表。');
+      if (baseSlot - at < 0 || baseSlot + names.length - 1 - at > PATTERN_SLOT - 1) throw new Error('号型太多，排不进号型表。');   // v71: the last position is ET's 纸样尺寸
       const before = new Map(value.sizes.map(size => [size.slot, size]));
       value.baseSize = names[at];
       value.sizes = names.map((label, i) => ({ label, slot: baseSlot + i - at })).filter(size => size.slot !== baseSlot).map(size => ({ id: before.get(size.slot)?.id || env.makeId(), label: size.label, step: size.slot - baseSlot, slot: size.slot }));
@@ -83,20 +85,35 @@ export const gradingCommands = [
       const plan = store(project, env, value, existing);
       return { summary: { operation: 'grade.setSizes', created: !existing, sizes: sizesInOrder(plan).map(size => size.label), baseSize: plan.baseSize, measures: plan.sizeTable.rows.length, rules: plan.anchors.filter(anchor => !anchor.plain).length } };
     } },
-  { type: 'grade.setMeasure', title: '尺寸表项目', description: '在放码的尺寸表里加一项或改一项，单位厘米。新的一项要给基码的数值 base；step 是每大一个码增加多少（可以是负数，不给就是 0）；个别码不按 step 走时用 values 单独给。已有的项目：只给 values 就只改那几个码；只给 base 时各码一起平移；给 step 时按 base 和 step 重排。放码规则的公式里用项目名称，例如“胸围/4”。',
-    input_schema: object({ name: text(50, '项目名称，如 胸围；不能以数字开头，不能带 + - * / ( ) 和空格'), base: number(-100000, 100000, '基码的数值，厘米'), step: number(-1000, 1000, '每大一个码增加多少，厘米'),
+  { type: 'grade.setMeasure', title: '尺寸表项目', description: '在放码的尺寸表里加一项或改一项，单位厘米。新的一项要给基码的数值 base；step 是每大一个码增加多少（可以是负数，不给就是 0）；个别码不按 step 走时用 values 单独给。已有的项目：只给 values 就只改那几个码；只给 base 时各码一起平移；给 step 时按 base 和 step 重排。放码规则的公式里用项目名称，例如“胸围/4”。pattern 是这一项的纸样尺寸（ET 尺寸表里“纸样尺寸”那一栏）：在画线工具的长度框里写这一项的名称（如“袖长/10”）时，和 ET 一样取的是纸样尺寸，不是基码的数值；新的一项不给 pattern 时纸样尺寸是 0（ET 自己的文件也是 0），改 base、step 不动纸样尺寸；已有的项目只给 pattern 就只改纸样尺寸。',
+    input_schema: object({ name: text(50, '项目名称，如 胸围；不能以数字开头，不能带 + - * / ( ) 和空格'), base: number(-100000, 100000, '基码的数值，厘米'), step: number(-1000, 1000, '每大一个码增加多少，厘米'), pattern: number(-100000, 100000, '纸样尺寸，厘米：在工具里写这一项的名称时取的数'),
       values: { type: 'array', description: '个别号型的数值', minItems: 0, maxItems: 13, items: object({ size: text(50, '号型名称'), value: number(-100000, 100000, '这个号型的数值，厘米') }, ['size', 'value']) } }, ['name']),
     run(project, p, env) {
       requireMm(project);
       const existing = need(project), value = open(existing), table = value.sizeTable, name = p.name.trim(), sizes = sizesInOrder(value);
       let row = table.rows.find(item => item.name === name); const created = !row;
-      if (!row) { if (p.base === undefined) throw new Error('尺寸表里还没有“' + name + '”，请给出基码的数值。'); row = { name, values: Array.from({ length: 50 }, (_, slot) => p.base + (slot - table.baseSlot) * (p.step ?? 0)) }; table.rows.push(row); }
-      else if (p.step !== undefined) { const base = p.base ?? row.values[table.baseSlot]; row.values = row.values.map((_, slot) => base + (slot - table.baseSlot) * p.step); }
-      else if (p.base !== undefined) { const shift = p.base - row.values[table.baseSlot]; row.values = row.values.map(v => v + shift); }
-      else if (!(p.values || []).length) throw new Error('请给出要改的数值。');
+      // v71: the last position of a row is ET's 纸样尺寸 (what a name typed into a tool stands for); the sizes never touch it
+      if (!row) { if (p.base === undefined) throw new Error('尺寸表里还没有“' + name + '”，请给出基码的数值。'); row = { name, values: Array.from({ length: 50 }, (_, slot) => slot === PATTERN_SLOT ? p.pattern ?? 0 : p.base + (slot - table.baseSlot) * (p.step ?? 0)) }; table.rows.push(row); }
+      else if (p.step !== undefined) { const base = p.base ?? row.values[table.baseSlot]; row.values = row.values.map((v, slot) => slot === PATTERN_SLOT ? v : base + (slot - table.baseSlot) * p.step); }
+      else if (p.base !== undefined) { const shift = p.base - row.values[table.baseSlot]; row.values = row.values.map((v, slot) => slot === PATTERN_SLOT ? v : v + shift); }
+      else if (!(p.values || []).length && p.pattern === undefined) throw new Error('请给出要改的数值。');
+      if (p.pattern !== undefined) row.values[PATTERN_SLOT] = p.pattern;
       for (const item of p.values || []) { const size = sizes.find(s => s.label === item.size.trim()); if (!size) throw new Error('号型里没有“' + item.size + '”。现有：' + sizes.map(s => s.label).join('、') + '。'); row.values[size.slot] = item.value; }
       const plan = store(project, env, value, existing), saved = plan.sizeTable.rows.find(item => item.name === name);
-      return { summary: { operation: 'grade.setMeasure', name, created, valuesCm: sizesInOrder(plan).map(size => ({ size: size.label, value: round(saved.values[size.slot]) })) } };
+      return { summary: { operation: 'grade.setMeasure', name, created, valuesCm: sizesInOrder(plan).map(size => ({ size: size.label, value: round(saved.values[size.slot]) })), patternCm: round(saved.values[PATTERN_SLOT]) } };
+    } },
+  { type: 'grade.sizeSeries', title: '号型系列', description: 'ET 号型名称里的五组号型系列（A 到 E 系列）。每个系列给号型表的位置起名，基码在每个系列里都是同一个位置；同一时间只用一个系列，它的名称就是各码的名称（ET 尺码栏里的号型、推板展开的各层）。尺寸表按位置存，换用系列只改哪些位置是号型、叫什么，尺寸表的数值和放码规则不变。names 是这个系列从小到大的全部名称（含基码，base 指出其中哪个是基码，排在基码的位置上，其余排在两边）；use 为 true 时换用这个系列，这个系列在基码的位置上必须有名称（ET 也不换：基础号型为空）。只给 use 就只换用；只给 names 就只改这个系列的名称，改的是正在用的系列时各码一起改名、增减；names 为空数组时清空一个没在用的系列；不给 use 就不换用。尺寸表的每一项在每个位置上都有数（新加的项目按基码的数值和档差排满所有位置），一个位置换用后成了号型，用的就是这个位置上原有的数，个别要改再用“尺寸表项目”。只是给正在用的系列加减号型时，用“设置号型”也一样。换用后号型变了的码，它们的锁定去掉。',
+    input_schema: object({ series: { type: 'string', enum: SERIES_LETTERS, description: '哪个系列：A、B、C、D、E' }, names: { type: 'array', description: '这个系列从小到大的全部号型名称，含基码', items: text(50, '号型名称'), minItems: 0, maxItems: 30 }, base: text(50, '基码在这个系列里的名称，必须在 names 里'), use: { type: 'boolean', description: 'true：换用这个系列' } }, ['series']),
+    run(project, p, env) {
+      requireMm(project);
+      const existing = need(project), value = open(existing), k = seriesIndex(p.series);
+      if (p.names === undefined && p.use !== true) throw new Error('请给出 names（这个系列的名称）或 use: true（换用这个系列）。');
+      if (p.names !== undefined && p.names.length && p.base === undefined) throw new Error('请用 base 指出哪个名称是基码。');
+      let dropped = { droppedLocks: 0, droppedSizeLocks: 0 }, before = value.sizeTable.activeSeries;
+      if (p.names !== undefined) dropped = { ...dropped, ...nameSeries(value, k, p.names, p.base, env.makeId) };
+      if (p.use === true && value.sizeTable.activeSeries !== k) dropped = useSeries(value, k, env.makeId);
+      const plan = store(project, env, value, existing), seen = describeSeries(plan.sizeTable);
+      return { summary: { operation: 'grade.sizeSeries', series: SERIES_LETTERS[k], inUse: seen.inUse, switched: before !== plan.sizeTable.activeSeries, sizes: sizesInOrder(plan).map(size => size.label), baseSize: plan.baseSize, names: seen.series[SERIES_LETTERS[k]] || [], ...(dropped.droppedLocks ? { locksRemoved: dropped.droppedLocks } : {}), ...(dropped.droppedSizeLocks ? { sizeLocksRemoved: dropped.droppedSizeLocks } : {}) } };
     } },
   { type: 'grade.removeMeasure', title: '删除尺寸表项目', description: '从放码的尺寸表里去掉一项。还有放码规则的公式用到它时不能去掉。',
     input_schema: object({ name: text(50, '项目名称') }, ['name']),
@@ -237,8 +254,9 @@ function lockedOf(plan) {
 export function describeGrading(project) {
   const plan = tablePlanOf(project); if (!plan) return null;
   const sizes = sizesInOrder(plan);
-  return { planId: plan.id, name: plan.name, baseSize: plan.baseSize, sizes: sizes.map(size => size.label),
-    measures: plan.sizeTable.rows.slice(0, 60).map(row => ({ name: row.name, valuesCm: sizes.map(size => round(row.values[size.slot])) })),
+  const named = describeSeries(plan.sizeTable);   // v71: ET's five series and the one in use; a row's 纸样尺寸 when it is not 0
+  return { planId: plan.id, name: plan.name, baseSize: plan.baseSize, sizes: sizes.map(size => size.label), seriesInUse: named.inUse, series: named.series,
+    measures: plan.sizeTable.rows.slice(0, 60).map(row => ({ name: row.name, valuesCm: sizes.map(size => round(row.values[size.slot])), ...(row.values[PATTERN_SLOT] ? { patternCm: round(row.values[PATTERN_SLOT]) } : {}) })),
     rules: plan.anchors.filter(anchor => !anchor.plain).slice(0, 200).map(anchor => { const at = placeOfAnchor(project, anchor); return { entityId: anchor.entityId, ...(at ? { at: { x: round(at.x), y: round(at.y) } } : {}), x: anchor.x, y: anchor.y, ...(angleOf(anchor) ? { angleDeg: angleOf(anchor) } : {}), ...(anchor.between !== undefined ? { onLine: true } : {}), ...(anchor.unit === 'in' ? { inches: true } : {}) }; }),
     ruleCount: plan.anchors.filter(anchor => !anchor.plain).length, ...(plan.lostRules ? { rulesLostToEdits: plan.lostRules } : {}),
     ...(plan.alignment ? { alignment: { mode: plan.alignment.mode, entityId: plan.alignment.entityId, at: { x: round(plan.alignment.at.x), y: round(plan.alignment.at.y) }, ...(plan.alignment.mode === 'point' && plan.alignment.axis !== 'both' ? { axis: plan.alignment.axis } : {}) } } : {}),

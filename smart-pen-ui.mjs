@@ -3,9 +3,10 @@
  * commands a finished gesture gives as one step, and shows what the pen holds. A bar over the top of the canvas carries the
  * three boxes ET's tool bar has for this tool (长度, 宽度 and, once lines are boxed, 调整量) and the status line.
  */
-import { emptyPen, penStep, penHint, squared } from './smart-pen.mjs';
+import { emptyPen, penStep, penHint, squared, draftLengths, penLengthText } from './smart-pen.mjs';
 import { fitClampedSpline } from './fit-spline.mjs';
 import { sampleCurve } from './curves.mjs';
+import { sizeFromFormula, drawingSizeTable } from './size-input.mjs';
 
 const STORE = 'zhiyi-smart-pen/v1';
 /** Points along the curve that will go through the given points, for the picture of a curve that is being drawn. */
@@ -16,17 +17,20 @@ export function createSmartPen({ commands, host, getProject, getTool, setTool, r
   let unit = ['cm', 'mm', 'inch'].includes(stored.unit) ? stored.unit : 'cm', state = emptyPen(), press = null, hover = null, message = '', failed = false;
   const scale = () => (unit === 'cm' ? 10 : unit === 'inch' ? 25.4 : 1);
   const bar = Object.assign(document.createElement('section'), { id: 'smart-pen-bar', className: 'smart-pen-bar', hidden: true }); bar.setAttribute('aria-label', '智能笔');
-  bar.innerHTML = '<strong>智能笔</strong><label>长度<input id="smart-length" type="text" inputmode="decimal" autocomplete="off"></label><label id="smart-width-label">宽度<input id="smart-width" type="text" inputmode="decimal" autocomplete="off"></label>'
+  bar.innerHTML = '<strong>智能笔</strong><label>长度<input id="smart-length" type="text" autocomplete="off" title="可以写数，也可以像 ET 一样写尺寸表的名称和公式，如“袖长/10”（取尺寸表的纸样尺寸）"></label><label id="smart-width-label">宽度<input id="smart-width" type="text" inputmode="decimal" autocomplete="off"></label>'
     + '<label id="smart-amount-label" hidden>调整量<input id="smart-amount" type="text" inputmode="decimal" autocomplete="off"></label><select id="smart-unit" aria-label="单位"><option value="cm">cm</option><option value="mm">mm</option><option value="inch">英寸</option></select>'
     + '<label class="smart-check"><input id="smart-ortho" type="checkbox">丁字尺</label><button id="smart-finish" type="button" title="与在画布上按右键相同">结束 / 执行</button><button id="smart-cancel" type="button" title="Esc">取消</button><button id="smart-close" type="button">关闭</button>'
     + '<p id="smart-status" class="smart-status" role="status"></p>';
   host.append(bar);
   const $ = id => bar.querySelector('#' + id), active = () => getTool() === 'smart';
   $('smart-unit').value = unit;
-  /** A size typed in the bar's unit, in millimetres; fractions of an inch as ET writes them (3/8, 1 3/8). Empty is 0. */
+  /** A size typed in the bar's unit, in millimetres; fractions of an inch as ET writes them (3/8, 1 3/8). Empty is 0. v71: or a
+   * formula with names of the size table, as in ET's boxes (each name is the row's 纸样尺寸 in cm, a plain number is in the bar's unit). */
+  let formulaError = '';
   function size(id) {
     const text = $(id).value.trim(); if (!text) return 0;
-    const m = text.match(/^(-?)\s*(?:(\d+(?:\.\d+)?)|(?:(\d+)[ '-])?(\d+)\/(\d+))$/); if (!m) return NaN;
+    const m = text.match(/^(-?)\s*(?:(\d+(?:\.\d+)?)|(?:(\d+)[ '-])?(\d+)\/(\d+))$/);
+    if (!m) { try { return sizeFromFormula(text, unit, drawingSizeTable(getProject())).mm; } catch (error) { formulaError = error.message; return NaN; } }
     const value = m[2] !== undefined ? Number(m[2]) : (Number(m[3] || 0) + Number(m[4]) / Number(m[5]));
     return (m[1] ? -1 : 1) * value * scale();
   }
@@ -44,8 +48,8 @@ export function createSmartPen({ commands, host, getProject, getTool, setTool, r
     refresh(); render();
   }
   function step(event) {
-    const typed = fields(), bad = Object.entries(typed).find(([, v]) => Number.isNaN(v));
-    if (bad && event.type === 'finish') { failed = true; message = '“' + { length: '长度', width: '宽度', amount: '调整量' }[bad[0]] + '”里不是一个数。'; refresh(); return; }
+    formulaError = ''; const typed = fields(), bad = Object.entries(typed).find(([, v]) => Number.isNaN(v));
+    if (bad && event.type === 'finish') { failed = true; message = '“' + { length: '长度', width: '宽度', amount: '调整量' }[bad[0]] + '”里不是一个数' + (formulaError ? '：' + formulaError : '') + '。'; refresh(); return; }
     take(penStep(state, event, getProject(), { length: typed.length || 0, width: typed.width || 0, amount: typed.amount || 0 }));
   }
   function refresh() {
@@ -119,6 +123,11 @@ export function createSmartPen({ commands, host, getProject, getTool, setTool, r
         for (const step of trial?.steps || []) {
           const points = step.type === 'draw.curve' ? curveThrough(step.parameters.points) : [step.parameters.from, step.parameters.to];
           node('path', { d: pathData(points, false), fill: 'none', stroke: '#dc8129', 'stroke-width': 2, 'stroke-dasharray': '5 4', 'data-smart-pen': 'draft' }, overlay);
+        }
+        // v72: the length of what would be drawn, as ET writes it next to the pointer (at the middle of each side for a rectangle)
+        if (next) for (const label of draftLengths(trial?.steps, state.ortho)) {
+          const pointer = label.at === 'pointer', q = screen(pointer ? next : label.at);
+          node('text', { x: q.x + (pointer ? 10 : 3), y: q.y - (pointer ? 10 : 4), fill: '#2e8b57', 'font-size': 13, 'font-weight': 600, 'data-smart-pen': 'length' }, overlay).textContent = penLengthText(label.lengthMm, unit);
         }
         for (const p of state.points) { const q = screen(p); node('circle', { cx: q.x, cy: q.y, r: 3.5, fill: '#dc8129', 'data-smart-pen': 'point' }, overlay); }
       }

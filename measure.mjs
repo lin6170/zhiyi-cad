@@ -5,6 +5,7 @@
  */
 import { nearestStation } from './construct.mjs';
 import { length as entityLength } from './geometry.mjs';
+import { lengthsInSizes } from './measure-sizes.mjs';
 
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y }), dot = (a, b) => a.x * b.x + a.y * b.y, cross = (a, b) => a.x * b.y - a.y * b.x, norm = a => Math.hypot(a.x, a.y);
 const round = (value, digits = 3) => { const f = 10 ** digits; return Math.round(value * f) / f; };
@@ -82,16 +83,25 @@ export function tapeMarks(entity, from = 'start', stepMm = 10) {
  * One entry for every kind of measurement, for callers that hold ids rather than objects (the command interface, the assistant).
  * query: { kind: 'length', entityIds } | { kind: 'distance', from, to } | { kind: 'angle', firstEntityId, secondEntityId, firstNear?, secondNear? }
  *      | { kind: 'threePoint', a, vertex, b } | { kind: 'along', entityId, first, second } | { kind: 'compare', firstEntityIds, secondEntityIds? }
+ * v72: when the drawing is graded, 'length' and 'compare' also give `perSize`, the totals in every size as ET's table 要素检查
+ * shows them (sizes from small to large, the base marked).
  */
 export function measure(project, query) {
   const entity = id => { const found = project.entities.find(e => e.id === id); if (!found) throw new Error('找不到图元 ' + id + '。'); return found; };
   const isPoint = p => p && Number.isFinite(p.x) && Number.isFinite(p.y), need = (ok, message) => { if (!ok) throw new Error(message); };
+  const perSize = groups => {
+    const measured = lengthsInSizes(project, groups); if (!measured) return {};
+    return { perSize: { baseSize: measured.baseSize, sizes: measured.sizes.map(size => ({ label: size.label, base: size.base, totalsMm: size.totalsMm.map(v => v === null ? null : round(v)), ...(size.missing.length ? { missing: size.missing } : {}), ...(size.error ? { error: size.error } : {}) })) } };
+  };
   need(query && typeof query === 'object', '缺少测量内容。');
-  if (query.kind === 'length') { need(Array.isArray(query.entityIds) && query.entityIds.length, '请给出要量的线。'); const result = compareGroups(query.entityIds.map(entity)); return { kind: 'length', lines: result.first, totalMm: result.firstTotalMm }; }
+  if (query.kind === 'length') { need(Array.isArray(query.entityIds) && query.entityIds.length, '请给出要量的线。'); const result = compareGroups(query.entityIds.map(entity)); return { kind: 'length', lines: result.first, totalMm: result.firstTotalMm, ...perSize([query.entityIds]) }; }
   if (query.kind === 'distance') { need(isPoint(query.from) && isPoint(query.to), '两点测量需要两个点。'); return { kind: 'distance', ...pointDistance(query.from, query.to) }; }
   if (query.kind === 'angle') return { kind: 'angle', ...linesAngle(entity(query.firstEntityId), isPoint(query.firstNear) ? query.firstNear : null, entity(query.secondEntityId), isPoint(query.secondNear) ? query.secondNear : null) };
   if (query.kind === 'threePoint') { need(isPoint(query.a) && isPoint(query.vertex) && isPoint(query.b), '三点角度需要三个点。'); return { kind: 'threePoint', ...threePointAngle(query.a, query.vertex, query.b) }; }
   if (query.kind === 'along') { need(isPoint(query.first) && isPoint(query.second), '线上两点测量需要两个点。'); const { points, ...rest } = alongBetween(entity(query.entityId), query.first, query.second); return { kind: 'along', ...rest }; }
-  if (query.kind === 'compare') { need(Array.isArray(query.firstEntityIds), '综合测量需要第一组线。'); return { kind: 'compare', ...compareGroups(query.firstEntityIds.map(entity), (query.secondEntityIds || []).map(entity)) }; }
+  if (query.kind === 'compare') {
+    need(Array.isArray(query.firstEntityIds), '综合测量需要第一组线。'); const second = query.secondEntityIds || [];
+    return { kind: 'compare', ...compareGroups(query.firstEntityIds.map(entity), second.map(entity)), ...perSize(second.length ? [query.firstEntityIds, second] : [query.firstEntityIds]) };
+  }
   throw new Error('不认识的测量种类。');
 }

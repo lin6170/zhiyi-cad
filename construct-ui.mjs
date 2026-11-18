@@ -7,6 +7,9 @@
 import { nearestStation } from './construct.mjs';
 import { nativeFitPoints } from './fit-spline.mjs';
 import { linesAngle, threePointAngle, alongBetween, compareGroups, tapeMarks } from './measure.mjs';
+import { lengthsInSizes, sizeTable } from './measure-sizes.mjs';
+import { sizeFromFormula, drawingSizeTable, describeFormula } from './size-input.mjs';
+import { parseFormula } from './size-formula.mjs';
 
 const STORE = 'zhiyi-construct/v1';
 const line = (key, label, extra = {}) => ({ key, label, kind: 'entity', ...extra });
@@ -283,9 +286,14 @@ export const CONSTRUCT_TOOLS = [
     report: (s, project, show) => { const r = threePointAngle(s.a, s.vertex, s.b); return { lines: ['角度 ' + r.degrees + '°', '两条边长 ' + show(r.firstArmMm) + ' 和 ' + show(r.secondArmMm)], marks: [{ kind: 'path', points: [s.a, s.vertex, s.b] }] }; } },
   { id: 'measureOn', title: '线上两点', hint: '点一条线，再在这条线上点两个位置，量它们之间沿线的长度。', slots: [line('base', '线'), spot('p1', '线上第一点'), spot('p2', '线上第二点')], fields: [],
     report: (s, project, show) => { const r = alongBetween(find(project, s.base.id), s.p1, s.p2); return { lines: ['沿线 ' + show(r.alongMm) + (r.otherWayMm !== undefined ? '（从另一边绕过去 ' + show(r.otherWayMm) + '）' : '') + '，直线距离 ' + show(r.straightMm), '两点离线的起点 ' + show(r.firstFromStartMm) + ' 和 ' + show(r.secondFromStartMm) + '，线长 ' + show(r.lineLengthMm)], marks: r.points.map(at => ({ kind: 'point', at })) }; } },
-  { id: 'measureSum', title: '综合测量', hint: '点第一组线，可以点多条，再点一次就取消。要比较两组，点下面的“第二组线”，再点第二组。显示每组的总长和两组相差多少。', slots: [many('first', '第一组线'), many('second', '第二组线', { optional: true })], fields: [],
+  { id: 'measureSum', title: '综合测量', hint: '点第一组线，可以点多条，再点一次就取消。要比较两组，点下面的“第二组线”，再点第二组。显示每组的总长和两组相差多少；图已放码时，下表列出各码的数和层间差（同 ET 的“要素检查”）。', slots: [many('first', '第一组线'), many('second', '第二组线', { optional: true })],
+    // v72: as the switches of ET's table 要素检查: 层间差 against the neighbour toward the base, or (基础号型层间差) against the base
+    fields: [{ key: 'steps', label: '层间差', kind: 'check', initial: true }, { key: 'fromBase', label: '基础号型层间差', kind: 'check', initial: false }],
     report: (s, project, show) => { const r = compareGroups(s.first.map(id => find(project, id)), s.second.map(id => find(project, id)));
-      return { lines: ['第一组 ' + r.first.length + ' 条，总长 ' + show(r.firstTotalMm), ...(r.second.length ? ['第二组 ' + r.second.length + ' 条，总长 ' + show(r.secondTotalMm), '第一组比第二组' + (r.differenceMm >= 0 ? '长 ' : '短 ') + show(Math.abs(r.differenceMm))] : [])], marks: [] }; } },
+      const measured = lengthsInSizes(project, r.second.length ? [s.first, s.second] : [s.first]), missing = measured ? [...new Set(measured.sizes.flatMap(size => size.missing))] : [], broken = measured ? measured.sizes.filter(size => size.error) : [];
+      return { lines: ['第一组 ' + r.first.length + ' 条，总长 ' + show(r.firstTotalMm), ...(r.second.length ? ['第二组 ' + r.second.length + ' 条，总长 ' + show(r.secondTotalMm), '第一组比第二组' + (r.differenceMm >= 0 ? '长 ' : '短 ') + show(Math.abs(r.differenceMm))] : []),
+        ...(measured ? ['各码（基码 ' + measured.baseSize + '）见下表，单位 ' + show(1).slice(show(1, false).length).trim() + (missing.length ? '；放码里没有' + missing.slice(0, 4).map(n => '“' + n + '”').join('、') + '，这些码空着' : '') + (broken.length ? '；' + broken.map(size => size.label + '：' + size.error).join('；') : '')] : [])],
+        marks: [], table: measured ? sizeTable(measured, { steps: s.steps, fromBase: s.fromBase }) : null }; } },
   { id: 'tape', title: '皮尺', hint: '在线上靠近量起的一端点一下。沿线每隔一段标出从这一端量起的长度。', slots: [line('base', '线和量起的一端', { end: true })], fields: [choice('end', '量起端', ENDS), size('step', '刻度间隔', 10)],
     report: (s, project, show) => { const r = tapeMarks(find(project, s.base.id), s.end, s.step); return { lines: ['线长 ' + show(r.lineLengthMm) + '，' + r.marks.length + ' 个刻度'], marks: r.marks.map(m => ({ kind: 'tick', at: m.point, normal: m.normal, label: show(m.distanceMm, false) })) }; } },
 ];
@@ -387,14 +395,16 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
   }
   const show = (mm, withUnit = true) => format(mm) + (withUnit ? ' ' + unitName() : '');
   // Sizes are kept in millimetres whatever the panel's unit is, so changing the unit changes only how they are written.
-  const states = Object.fromEntries(CONSTRUCT_TOOLS.map(tool => [tool.id, { picks: {}, values: Object.fromEntries(tool.fields.map(f => [f.key, f.initial])), active: 0 }]));
+  // v71: a size may be typed as a formula with names of the drawing's size table, as in ET's tool boxes ("袖长/10"); it is worked
+  // out when the tool is used (each name is the row's 纸样尺寸 in cm, each plain number is in the panel's unit), see size-input.mjs
+  const states = Object.fromEntries(CONSTRUCT_TOOLS.map(tool => [tool.id, { picks: {}, values: Object.fromEntries(tool.fields.map(f => [f.key, f.initial])), formulas: {}, active: 0 }]));
   const tool = () => CONSTRUCT_TOOLS.find(t => t.id === toolId), state = () => states[toolId];
   const remember = () => { try { localStorage.setItem(STORE, JSON.stringify({ unit, tool: toolId })); } catch { /* kept for this visit only */ } };
 
   const panel = Object.assign(document.createElement('section'), { id: 'construct-panel', className: 'construct-panel', hidden: true }); panel.setAttribute('aria-label', '画线工具');
   panel.innerHTML = '<header><strong>画线工具</strong><label class="construct-unit">单位<select id="construct-unit"><option value="cm">cm</option><option value="mm">mm</option><option value="inch">英寸</option></select></label><button id="construct-close" type="button">关闭</button></header>' +
     '<div id="construct-tools" class="construct-tools" role="tablist"></div><p id="construct-hint" class="construct-hint"></p><div id="construct-slots" class="construct-slots"></div><div id="construct-fields" class="construct-fields"></div>' +
-    '<p id="construct-status" class="construct-status" role="status"></p><div class="construct-actions"><button id="construct-apply" type="button" class="primary" disabled>画到画布</button><button id="construct-clear" type="button">重新点选</button></div>';
+    '<p id="construct-status" class="construct-status" role="status"></p><div id="construct-table" class="construct-table" hidden></div><div class="construct-actions"><button id="construct-apply" type="button" class="primary" disabled>画到画布</button><button id="construct-clear" type="button">重新点选</button></div>';
   host.append(panel);
   const $ = id => panel.querySelector('#' + id), active = () => getTool() === 'construct';
   for (const item of CONSTRUCT_TOOLS) { const button = Object.assign(document.createElement('button'), { type: 'button', textContent: item.title, id: 'construct-tool-' + item.id }); button.setAttribute('role', 'tab'); button.onclick = () => choose(item.id); $('construct-tools').append(button); }
@@ -402,8 +412,9 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
 
   const entityOf = id => getProject().entities.find(e => e.id === id);
   /** Parameters for the command, or the reason they are not complete yet. */
+  let notes = [];   // what the formulas of the sizes came to (v71)
   function collect() {
-    const current = tool(), s = state(), values = {};
+    const current = tool(), s = state(), values = {}; notes = [];
     for (const slot of current.slots) {
       const pick = s.picks[slot.key];
       if (slot.kind === 'entities') { const ids = (pick?.ids || []).filter(id => entityOf(id)); if (!ids.length && !slot.optional) return { wait: '请点选：' + slot.label }; values[slot.key] = ids; }
@@ -415,6 +426,12 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
       if (field.kind === 'choice' || field.kind === 'check') { values[field.key] = raw; continue; }
       if (field.kind === 'text') { const typed = String(raw ?? '').trim(); if (!typed) return { wait: '请填写：' + field.label }; values[field.key] = typed; continue; }
       if (sized(field.kind)) {
+        const formula = s.formulas[field.key];
+        if (formula !== undefined) {
+          let result; try { result = sizeFromFormula(formula, unit, drawingSizeTable(getProject())); } catch (error) { return { wait: field.label + '：' + error.message }; }
+          if (field.kind === 'length' && !(result.mm > 0 || (field.allowZero && result.mm === 0))) return { wait: field.label + '“' + formula + '”' + describeFormula(result, show) + '，须大于 0' };
+          values[field.key] = result.mm; notes.push(field.label + ' ' + formula + ' ' + describeFormula(result, show)); continue;
+        }
         if (!(typeof raw === 'number' && Number.isFinite(raw))) return { wait: '请填写：' + field.label + (unit === 'inch' ? '（可以写 3/8 或 1 3/8）' : '') };
         if (field.kind === 'length' && !(raw > 0 || (field.allowZero && raw === 0))) return { wait: field.label + '须大于 0' };
         values[field.key] = raw; continue;
@@ -433,7 +450,7 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
     const ready = collect();
     if (ready.wait) message = ready.wait;
     else if (ready.report) { try { report = tool().report(ready.report, getProject(), show); message = report.lines.join('\n'); } catch (error) { failed = true; message = error.message; } }
-    else try { plan = commands.preview({ schema: 'zhiyi-cad-command/v1', type: ready.command.type, expectedRevision: commands.read().revision, parameters: ready.command.parameters }); message = describe(plan.summary, show) || '可以画到画布。'; }
+    else try { plan = commands.preview({ schema: 'zhiyi-cad-command/v1', type: ready.command.type, expectedRevision: commands.read().revision, parameters: ready.command.parameters }); message = (describe(plan.summary, show) || '可以画到画布。') + (notes.length ? '\n' + notes.join('\n') : ''); }
     catch (error) { failed = true; message = error.message; }
     refresh(); render();
   }
@@ -458,13 +475,17 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
         const label = document.createElement('label'), value = s.values[field.key]; let input;
         if (field.kind === 'choice') { input = document.createElement('select'); for (const [v, text] of field.options) input.append(Object.assign(document.createElement('option'), { value: v, textContent: text })); input.value = value; }
         else if (field.kind === 'check') { input = Object.assign(document.createElement('input'), { type: 'checkbox', checked: Boolean(value) }); label.className = 'construct-check'; }
-        else if (sized(field.kind)) input = Object.assign(document.createElement('input'), { type: 'text', inputMode: 'decimal', autocomplete: 'off', value: Number.isFinite(value) ? format(value) : '' });
+        else if (sized(field.kind)) input = Object.assign(document.createElement('input'), { type: 'text', inputMode: 'text', autocomplete: 'off', value: s.formulas[field.key] ?? (Number.isFinite(value) ? format(value) : ''), title: '可以写数，也可以像 ET 一样写尺寸表的名称和公式，如“袖长/10”（取尺寸表的纸样尺寸）' });
         else if (field.kind === 'text') input = Object.assign(document.createElement('input'), { type: 'text', autocomplete: 'off', maxLength: 200, value: String(value ?? '') });
         else input = Object.assign(document.createElement('input'), { type: 'number', step: 'any', value: String(value) });
         input.id = 'construct-field-' + field.key;
         const suffix = sized(field.kind) ? ' ' + unitName() : field.kind === 'angle' ? ' 度' : '';
         input.oninput = () => {
-          if (sized(field.kind)) { const typed = parseSize(input.value); s.values[field.key] = typed === null ? NaN : typed * scale(); }
+          if (sized(field.kind)) {
+            // a size; else a formula when it names something (Chinese) or reads as one; else not a size (3/8x is not guessed at)
+            const text = input.value.trim(), typed = parseSize(text), formula = typed === null && text && (/[\u3400-\u9fff]/.test(text) || (() => { try { parseFormula(text); return true; } catch { return false; } })());
+            if (formula) s.formulas[field.key] = text; else { s.values[field.key] = typed === null ? NaN : typed * scale(); delete s.formulas[field.key]; }
+          }
           else s.values[field.key] = field.kind === 'check' ? input.checked : input.value;
           update();
         };
@@ -477,9 +498,23 @@ export function createConstructPanel({ commands, host, getProject, getSelection,
       if (field.kind === 'check') input.checked = Boolean(value);
       else if (document.activeElement === input) continue;
       else if (!sized(field.kind)) input.value = String(value);
+      else if (s.formulas[field.key] !== undefined) input.value = s.formulas[field.key];   // v71: a formula stays as it was typed
       else if (Number.isFinite(value)) input.value = format(value);
     }
     const status = $('construct-status'); status.textContent = message; status.dataset.state = failed ? 'error' : plan ? 'ready' : 'wait';
+    // v72: a measurement in every size, as ET's table 要素检查 (the base row marked, 层间差 columns after the numbers they belong to)
+    const table = $('construct-table'), data = !failed && current.report ? report?.table : null; table.hidden = !data; table.replaceChildren();
+    if (data) {
+      const grid = document.createElement('table'), head = grid.createTHead().insertRow(), body = grid.createTBody(), cell = (row, tag, text, className) => { const c = document.createElement(tag); c.textContent = text; if (className) c.className = className; row.append(c); return c; };
+      cell(head, 'th', '号型');
+      for (const column of data.columns) cell(head, 'th', column.title, column.step ? 'step' : '');
+      data.sizes.forEach((size, i) => {
+        const row = body.insertRow(); if (size.base) row.className = 'base';
+        cell(row, 'th', size.label + (size.base ? '（基码）' : ''));
+        for (const column of data.columns) { const value = column.values[i]; cell(row, 'td', value === null ? '—' : column.step && value > 0 ? '+' + show(value, false) : show(value, false), column.step ? 'step' : ''); }
+      });
+      table.append(grid);
+    }
     $('construct-apply').disabled = !plan; $('construct-apply').hidden = Boolean(current.report);
   }
   // Entering a tool starts it afresh: earlier picks are dropped, typed sizes stay.

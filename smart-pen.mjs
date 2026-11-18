@@ -29,6 +29,8 @@
  */
 import { entitiesInBox } from './selection.mjs';
 import { cutPlaces, crossings } from './construct-trim.mjs';
+import { fitClampedSpline } from './fit-spline.mjs';
+import { length } from './geometry.mjs';
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y), copy = p => ({ x: p.x, y: p.y });
 export const emptyPen = () => ({ mode: 'idle', points: [], ortho: false, picked: [], boundaries: [], cutter: null });
@@ -60,6 +62,35 @@ export function squared(from, to) {
   if (angle < 30) return { x: from.x + sx * reach, y: from.y };
   if (angle > 60) return { x: from.x, y: from.y + sy * reach };
   return { x: from.x + sx * reach * Math.SQRT1_2, y: from.y + sy * reach * Math.SQRT1_2 };
+}
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+/**
+ * v72: a length as ET 2017 writes it next to the pointer while a line is drawn, in the unit of the pen's bar: inches to the
+ * nearest sixteenth as ET writes them (5'1/8, 7'1/4, 2, 3/4; a difference below zero as ET's table 要素检查 writes it, -13/16,
+ * -1'3/16), centimetres to two places and millimetres to one, without the zeros at the end.
+ */
+export function penLengthText(mm, unit) {
+  if (unit === 'inch') {
+    const signed = Math.round(mm / 25.4 * 16), sixteenths = Math.abs(signed), whole = Math.floor(sixteenths / 16), rest = sixteenths - whole * 16, sign = signed < 0 ? '-' : '';
+    if (!rest) return sign + whole;
+    const g = gcd(rest, 16), fraction = rest / g + '/' + 16 / g;
+    return sign + (whole ? whole + "'" + fraction : fraction);
+  }
+  return String(Number((unit === 'cm' ? mm / 10 : mm).toFixed(unit === 'cm' ? 2 : 1)));
+}
+/**
+ * v72: the lengths ET writes while a line is drawn with its smart tool, for `steps`, the commands a right click would run now.
+ * A line or a curve has one, next to the pointer (`at: 'pointer'`; for a curve the length of the whole curve through every
+ * point, as the curve will be drawn); a rectangle has one at the middle of each side. With the T-square on ET writes none.
+ */
+export function draftLengths(steps, ortho) {
+  if (ortho || !steps?.length) return [];
+  if (steps.length === 4 && steps.every(s => s.type === 'draw.line')) return steps.map(({ parameters: { from, to } }) => ({ lengthMm: dist(from, to), at: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } }));
+  if (steps.length !== 1) return [];
+  const [{ type, parameters }] = steps;
+  if (type === 'draw.line') return [{ lengthMm: dist(parameters.from, parameters.to), at: 'pointer' }];
+  if (type === 'draw.curve') { try { return [{ lengthMm: length({ type: 'polyline', points: [], curve: fitClampedSpline(parameters.points).curve }), at: 'pointer' }]; } catch { return []; } }
+  return [];
 }
 /** What the pen is waiting for, in words for the status line. */
 export function penHint(state) {

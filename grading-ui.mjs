@@ -5,6 +5,9 @@ import { parseFormula, formulaNames } from './size-formula.mjs';
 import { alignmentPlace, alignmentTransforms, transformPoint, bakeAlignment, alignedMove, pieceOfEntity } from './grading-align.mjs';
 import { lockPoints, unlockPoints, lockSize, moveInSize, describeLocks } from './grading-locks.mjs';
 import { generateGradedSize } from './grading.mjs';
+import { SERIES_LETTERS, useSeries } from './size-series.mjs';
+import { PATTERN_SLOT } from './size-input.mjs';
+import { loadLibrary, saveLibrary, normalizeLibrary, readRuleTable, writeRuleTable, missingNames, RULES_PER_GROUP } from './rule-library.mjs';
 const colors=['#4da6ce','#d78cb5','#d89545','#77aa69','#a28ad4','#d97465','#5bb4a8','#9b9953','#6881cd','#b7799e','#a9a55e','#80a4a1'];
 export function createGradingPanel({getProject,getSelection,commit,setTool,getTool,render,fit,notify,download,getDxfOptions=()=>({})}){
   const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value)),format=value=>Number.isFinite(value)?value.toFixed(3):'—';
@@ -37,23 +40,89 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
   }
   function addTableSize(smaller){
     const sizes=tableSizes(),slot=smaller?sizes[0].slot-1:sizes.at(-1).slot+1;
-    if(draft.sizes.length>=12)throw new Error('最多 12 个目标尺码');if(slot<0||slot>49)throw new Error('号型表这一头已经排满');
+    if(draft.sizes.length>=12)throw new Error('最多 12 个目标尺码');if(slot<0||slot>=PATTERN_SLOT)throw new Error('号型表这一头已经排满');   // v71: the last position is ET's 纸样尺寸
     draft.sizes.push({id:crypto.randomUUID(),label:nextSizeName(sizes,smaller),step:slot-draft.sizeTable.baseSlot,slot});tableChanged();
   }
   function addTableRow(){
-    const name=$('grade-table-new-name').value.trim(),base=num('grade-table-new-base'),step=$('grade-table-new-step').value.trim()?Number($('grade-table-new-step').value):0;
-    if(!name||!Number.isFinite(base)||!Number.isFinite(step))throw new Error('请填名称和基码的数值（厘米）；每码差可以不填');
-    draft.sizeTable.rows.push({name,values:Array.from({length:50},(_,slot)=>base+(slot-draft.sizeTable.baseSlot)*step)});
+    const name=$('grade-table-new-name').value.trim(),base=num('grade-table-new-base'),step=$('grade-table-new-step').value.trim()?Number($('grade-table-new-step').value):0,pattern=$('grade-table-new-pattern').value.trim()?Number($('grade-table-new-pattern').value):0;
+    if(!name||!Number.isFinite(base)||!Number.isFinite(step)||!Number.isFinite(pattern))throw new Error('请填名称和基码的数值（厘米）；每码差、纸样尺寸可以不填');
+    // v71: the last position is ET's 纸样尺寸 (0 unless given, as in ET's own files)
+    draft.sizeTable.rows.push({name,values:Array.from({length:50},(_,slot)=>slot===PATTERN_SLOT?pattern:base+(slot-draft.sizeTable.baseSlot)*step)});
     try{normalizeGradingPlan(draft);}catch(error){draft.sizeTable.rows.pop();throw error;}
-    for(const id of ['grade-table-new-name','grade-table-new-base','grade-table-new-step'])$(id).value='';tableChanged();
+    for(const id of ['grade-table-new-name','grade-table-new-base','grade-table-new-step','grade-table-new-pattern'])$(id).value='';tableChanged();
   }
   function removeTableRow(index){
     const name=draft.sizeTable.rows[index].name,uses=[...draft.anchors.filter(anchor=>!anchor.plain),...(draft.notchRules||[])].filter(rule=>[rule.x,rule.y].some(text=>{try{return formulaNames(parseFormula(text)).has(name);}catch{return false;}})).length;
     if(uses)throw new Error('还有 '+uses+' 个放码点的公式用到“'+name+'”，先改掉这些公式');
     draft.sizeTable.rows.splice(index,1);tableChanged();
   }
+  // v71: ET's five size series (号型名称设定): one column a series, one row a position; a click on a column's header makes that series
+  // the one in use (useSeries in size-series.mjs), and a name is changed or given in its cell
+  let seriesKey='';
+  function refreshSeries(){
+    const table=draft.sizeTable,holder=$('grade-series');if(!holder)return;
+    const used=[table.baseSlot,...draft.sizes.map(size=>size.slot),...table.series.flatMap(list=>list.map(item=>item.slot))],low=Math.max(0,Math.min(...used)-1),high=Math.min(PATTERN_SLOT-1,Math.max(...used)+1);
+    const key=JSON.stringify([table.activeSeries,low,high,table.series,draft.baseSize,draft.sizes.map(size=>[size.slot,size.label])]);
+    if(seriesKey===key||typingIn(holder))return;seriesKey=key;
+    const grid=document.createElement('table'),head=grid.insertRow();head.append(Object.assign(document.createElement('th'),{textContent:'位置'}));
+    SERIES_LETTERS.forEach((letter,k)=>{const cell=document.createElement('th'),button=document.createElement('button');button.type='button';button.dataset.series=k;button.textContent=letter+(k===table.activeSeries?' 在用':'');if(k===table.activeSeries)button.className='in-use';
+      button.title=k===table.activeSeries?'正在用的系列：它的名称就是各码的名称':'换用 '+letter+' 系列（ET：点这一列的表头）';button.onclick=action(()=>switchSeries(k));cell.append(button);head.append(cell);});
+    for(let slot=low;slot<=high;slot++){
+      const line=grid.insertRow(),place=slot===table.baseSlot?'基码':(slot>table.baseSlot?'+':'−')+Math.abs(slot-table.baseSlot);line.dataset.slot=slot;if(slot===table.baseSlot)line.className='base';
+      line.append(Object.assign(document.createElement('th'),{textContent:place}));
+      table.series.forEach((list,k)=>{const input=document.createElement('input'),item=list.find(entry=>entry.slot===slot);input.value=item?item.name:'';input.maxLength=50;input.dataset.series=k;input.dataset.slot=slot;input.setAttribute('aria-label',SERIES_LETTERS[k]+' 系列 '+place+' 的名称');
+        input.onchange=()=>{try{nameCell(k,slot,input.value.trim());}catch(error){notify(error.message);seriesKey='';input.blur();refreshSeries();}};line.insertCell().append(input);});
+    }
+    holder.replaceChildren(grid);
+  }
+  function switchSeries(k){
+    const result=useSeries(clone(normalizeGradingPlan(draft)),k,()=>crypto.randomUUID());draft=normalizeGradingPlan(result.value);$('grade-base-size').value=draft.baseSize;tableChanged();
+    const dropped=result.droppedLocks+result.droppedSizeLocks;
+    notify('换用了 '+SERIES_LETTERS[k]+' 系列：号型 '+tableSizes().map(size=>size.label+(size.base?'（基码）':'')).join('、')+'。尺寸表的数值没变（按位置存，和 ET 一样），各码按这个系列的位置放码。'+(dropped?'不再是号型的码，它们的锁定去掉了（'+dropped+' 处）。':''));
+  }
+  function nameCell(k,slot,name){
+    const value=clone(normalizeGradingPlan(draft)),table=value.sizeTable,list=table.series[k];
+    if(name&&list.some(item=>item.slot!==slot&&item.name===name))throw new Error('发现有重复的号型名称，请仔细检查!（'+SERIES_LETTERS[k]+' 系列已经有“'+name+'”）');
+    if(k===table.activeSeries){   // the series in use: its names are the sizes
+      if(slot===table.baseSlot){if(!name)throw new Error('基码的名称不能空着');value.baseSize=name;}
+      else{const size=value.sizes.find(item=>item.slot===slot);
+        if(size&&name)size.label=name;
+        else if(size){if(value.sizes.length<=1)throw new Error('至少要留一个基码以外的号型');value.sizes=value.sizes.filter(item=>item!==size);value.locks=(value.locks||[]).filter(lock=>lock.sizeId!==size.id);value.lockedSizes=(value.lockedSizes||[]).filter(id=>id!==size.id);}
+        else if(name){if(value.sizes.length>=12)throw new Error('最多 12 个目标尺码');value.sizes.push({id:crypto.randomUUID(),label:name,step:slot-table.baseSlot,slot});}}
+    }
+    table.series[k]=list.filter(item=>item.slot!==slot);if(name)table.series[k].push({slot,name});table.series[k].sort((a,b)=>a.slot-b.slot);
+    draft=normalizeGradingPlan(value);$('grade-base-size').value=draft.baseSize;tableChanged();
+  }
+  // v71: ET's 规则表 (rule-library.mjs): named rules in groups, kept in this browser as ET keeps them on the computer
+  let library=loadLibrary(),ruleGroup=0,libraryKey='';
+  const currentGroup=()=>library.groups[ruleGroup]||null;
+  function storeLibrary(){if(!saveLibrary(library))notify('这个浏览器不让存规则表（可能是隐私窗口），关掉页面后规则表会丢；可以“存成 ET 规则表文件”留下来。');libraryKey='';refreshRuleLibrary();}
+  function fillRulePicker(select){const group=currentGroup();select.replaceChildren(new Option(group?'从“'+group.name+'”取…':'规则表还是空的',''));(group?.rules||[]).forEach((rule,i)=>select.add(new Option(rule.name+'：'+(rule.x||'—')+' / '+(rule.y||'—'),String(i))));select.disabled=!group?.rules.length;}
+  function applyLibraryRule(anchor,rule){
+    const missing=missingNames(rule,draft.sizeTable.rows);if(missing.length)throw new Error('规则“'+rule.name+'”用到了尺寸表里没有的'+missing.map(name=>'“'+name+'”').join('、')+'，没有抄过来');
+    const twins=twinsOf(anchor);for(const item of [anchor,...twins]){item.x=rule.x;item.y=rule.y;delete item.unit;}tableChanged();
+    notify('抄了规则表里的“'+rule.name+'”：水平 '+(rule.x||'不动')+'，竖直 '+(rule.y||'不动')+(twins.length?'（同一位置上另外 '+twins.length+' 个点一起）':'')+'。和 ET 一样只抄公式，以后改规则表不影响这张图。');
+  }
+  function keepInLibrary(anchor){
+    if(!library.groups.length){library.groups.push({name:'规则组 1',rules:[]});ruleGroup=0;}
+    const group=currentGroup();if(group.rules.length>=RULES_PER_GROUP)throw new Error('这个规则组满了（ET 的规则表每组 100 行）');
+    let n=group.rules.length+1;while(group.rules.some(rule=>rule.name==='规则 '+n))n++;group.rules.push({name:'规则 '+n,x:anchor.x,y:anchor.y});storeLibrary();
+    notify('存进了规则表“'+group.name+'”：规则 '+n+'（水平 '+(anchor.x||'—')+'，竖直 '+(anchor.y||'—')+'），名称可以在规则表里改。');
+  }
+  function refreshRuleLibrary(){
+    const holder=$('grade-rule-rows');if(!holder)return;if(ruleGroup>=library.groups.length)ruleGroup=Math.max(0,library.groups.length-1);
+    const key=JSON.stringify([library,ruleGroup]);if(libraryKey===key||typingIn(holder))return;libraryKey=key;
+    const select=$('grade-rule-group');select.replaceChildren(...library.groups.map((group,i)=>new Option(group.name+' · '+group.rules.length+' 条',String(i))));select.value=String(ruleGroup);select.disabled=!library.groups.length;
+    $('grade-rule-group-remove').disabled=!library.groups.length;$('grade-rule-add').disabled=!library.groups.length;$('grade-rule-export').disabled=!library.groups.length;
+    const group=currentGroup(),grid=document.createElement('table'),head=grid.insertRow();for(const text of ['规则名称','X 方向','Y 方向',''])head.append(Object.assign(document.createElement('th'),{textContent:text}));
+    (group?.rules||[]).forEach((rule,i)=>{const line=grid.insertRow();
+      for(const key of ['name','x','y']){const input=document.createElement('input');input.value=rule[key];input.maxLength=key==='name'?60:300;input.dataset.libraryRule=i;input.dataset.key=key;input.setAttribute('aria-label','规则 '+(i+1)+' 的'+{name:'名称',x:'X 方向公式',y:'Y 方向公式'}[key]);input.onchange=()=>{rule[key]=input.value.trim();storeLibrary();};line.insertCell().append(input);}
+      const remove=document.createElement('button');remove.textContent='×';remove.dataset.removeLibraryRule=i;remove.setAttribute('aria-label','删掉规则 '+rule.name);remove.onclick=()=>{group.rules.splice(i,1);storeLibrary();};line.insertCell().append(remove);});
+    if(!group){const none=grid.insertRow().insertCell();none.colSpan=4;none.className='empty';none.textContent='还没有规则组：加一个，或者读进 ET 的规则表文件（ET 文件夹 sys_dir 里的 MyRuleRecord.rtb）。';}
+    holder.replaceChildren(grid);for(const picker of document.querySelectorAll('[data-rule-pick]'))fillRulePicker(picker);
+  }
   function refreshTable(){
-    const table=draft.sizeTable,sizes=tableSizes();
+    const table=draft.sizeTable,sizes=tableSizes();refreshSeries();refreshRuleLibrary();
     $('grade-table-info').textContent='这个方案按尺寸表和公式放码（ET 的做法），管整张图。号型：'+sizes.map(size=>size.label+(size.base?'（基码）':'')).join('、')+'。有规则的点按公式移动，同一位置上没有规则的点跟着走，曲线在放码点之间整体转动缩放。在画布上点一条线，下面列出它的点，可以加规则、改公式。保存为 ET 文件时，号型、尺寸表和规则一起写入。'+(draft.lostRules?'\n有 '+draft.lostRules+' 个放码点因为改图失去了位置，规则已去掉；核对后“更新放码方案”。':'');
     // the sizes: a name can be changed; a size is added or taken away at either end
     const sizeHolder=$('grade-table-sizes'),sizeKey=JSON.stringify(sizes.map(size=>[size.slot,Boolean(size.base),size.base?size.label:'']));
@@ -73,13 +142,17 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
     if(tableKey!==key||!typingIn(holder)){
       tableKey=key;const grid=document.createElement('table'),head=grid.insertRow();head.append(Object.assign(document.createElement('th'),{textContent:'名称'}));
       for(const size of sizes){const cell=document.createElement('th');cell.textContent=size.label+(size.base?' *':'');if(size.base)cell.className='base';head.append(cell);}
+      head.append(Object.assign(document.createElement('th'),{textContent:'纸样尺寸',className:'pattern',title:'ET 尺寸表的“纸样尺寸”一栏：在画线工具的长度框里写这一项的名称时取的数（ET 也这样），不参与放码；ET 自己的文件里一般是 0'}));
       head.append(document.createElement('th'));
       table.rows.forEach((row,index)=>{const line=grid.insertRow();line.insertCell().textContent=row.name;
         for(const size of sizes){const input=document.createElement('input');input.type='number';input.step='any';input.value=Number(row.values[size.slot].toFixed(4));input.dataset.row=index;input.dataset.slot=size.slot;input.setAttribute('aria-label',row.name+' '+size.label+' cm');
           input.oninput=()=>{const value=input.value.trim()?Number(input.value):NaN;if(!Number.isFinite(value))return;draft.sizeTable.rows[index].values[size.slot]=value;draftEdited=true;preview=null;refreshStatusOnly();render();};line.insertCell().append(input);}
+        // v71: ET's 纸样尺寸 (the last position of the row): what a name typed into a tool stands for; it moves no size
+        const pattern=document.createElement('input');pattern.type='number';pattern.step='any';pattern.value=Number(row.values[PATTERN_SLOT].toFixed(4));pattern.dataset.row=index;pattern.dataset.pattern='1';pattern.setAttribute('aria-label',row.name+' 纸样尺寸 cm');
+        pattern.oninput=()=>{const value=pattern.value.trim()?Number(pattern.value):NaN;if(!Number.isFinite(value))return;draft.sizeTable.rows[index].values[PATTERN_SLOT]=value;draftEdited=true;};line.insertCell().append(pattern);
         const remove=document.createElement('button');remove.textContent='×';remove.dataset.removeRow=index;remove.setAttribute('aria-label','去掉尺寸表的“'+row.name+'”');remove.onclick=action(()=>removeTableRow(index));line.insertCell().append(remove);
       });
-      if(!table.rows.length){const none=grid.insertRow().insertCell();none.colSpan=sizes.length+2;none.className='empty';none.textContent='尺寸表还是空的。在下面加一项，例如：胸围，基码 88，每码差 4。';}
+      if(!table.rows.length){const none=grid.insertRow().insertCell();none.colSpan=sizes.length+3;none.className='empty';none.textContent='尺寸表还是空的。在下面加一项，例如：胸围，基码 88，每码差 4。';}
       holder.replaceChildren(grid);
     }
     // the lines that have grading points, the line picked on the canvas, and the points of the current line
@@ -109,6 +182,10 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
         const a=degrees*Math.PI/180,tidy=v=>Math.abs(v)<1e-12?0:v,axes={axisX:[tidy(Math.cos(a)),tidy(Math.sin(a))],axisY:[tidy(-Math.sin(a)),tidy(Math.cos(a))]},twins=twinsOf(anchor);
         for(const item of [anchor,...twins])Object.assign(item,axes);tableChanged();if(twins.length)notify('同一位置上另外 '+twins.length+' 个点带着相同的规则，方向一起改了。');
       };turnRow.append(turnInput);box.append(turnRow);
+      // v71: ET's 规则表: a rule of the library copied into this point (导入或导出规则, a click on a rule), or this point kept in it (追加规则)
+      const pickRow=document.createElement('label'),picker=document.createElement('select');pickRow.textContent='规则表';picker.dataset.rulePick=order;picker.setAttribute('aria-label',text+' 从规则表取规则');fillRulePicker(picker);
+      picker.onchange=()=>{const rule=currentGroup()?.rules[Number(picker.value)];picker.value='';if(!rule)return;try{applyLibraryRule(anchor,rule);}catch(error){notify(error.message);}};pickRow.append(picker);box.append(pickRow);
+      const keep=document.createElement('button');keep.textContent='存进规则表';keep.dataset.keepRule=order;keep.title='把这个点的两个公式作为一条新规则存进规则表（ET 的“追加规则”）';keep.onclick=action(()=>keepInLibrary(anchor));box.append(keep);
       const remove=document.createElement('button');remove.textContent='去掉这个点的规则';remove.dataset.removeRule=order;
       remove.onclick=()=>{const gone=new Set([anchor,...twinsOf(anchor)]);draft.anchors=draft.anchors.filter(item=>!gone.has(item));tableChanged();if(gone.size>1)notify('同一位置上另外 '+(gone.size-1)+' 个点的相同规则一起去掉了。');};box.append(remove);
       return box;
@@ -246,6 +323,14 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
   $('grade-lock-move').onclick=()=>{if(!lockSizeId()&&locking!=='move'){notify('先在“号型”里选一个号型（不是基码），再在这个码里移动点。');return;}locking=locking==='move'?'':'move';aligning='';refresh();if(locking)notify('在画布上点要移动的点：它在“'+labelOfSize(lockSizeId())+'”里移动上面填的毫米数，并且锁定。');};
   $('grade-lock-size-toggle').onclick=action(()=>{const id=lockSizeId();if(!draft||!id)return;const whole=(draft.lockedSizes||[]).includes(id),plan=normalizeGradingPlan(draft),result=lockSize(getProject(),plan,id,!whole,make(plan));draft=normalizeGradingPlan(result.value);tableChanged();notify(whole?'“'+labelOfSize(id)+'”解锁了，重新按规则生成（单独锁定的点仍然锁定）。':'“'+labelOfSize(id)+'”整码锁定了：以后改规则、改基码，这个码都不变。');});
   $('grade-table-smaller').onclick=action(()=>addTableSize(true));$('grade-table-larger').onclick=action(()=>addTableSize(false));$('grade-table-add-row').onclick=action(addTableRow);
+  $('grade-rule-group').onchange=()=>{ruleGroup=Number($('grade-rule-group').value)||0;libraryKey='';refreshRuleLibrary();};
+  $('grade-rule-group-add').onclick=action(()=>{if(library.groups.length>=200)throw new Error('规则组最多 200 个');const name=$('grade-rule-group-name').value.trim()||'规则组 '+(library.groups.length+1);library=normalizeLibrary({groups:[...library.groups,{name,rules:[]}]});ruleGroup=library.groups.length-1;$('grade-rule-group-name').value='';storeLibrary();});
+  $('grade-rule-group-remove').onclick=action(()=>{const group=currentGroup();if(!group)return;library.groups.splice(ruleGroup,1);ruleGroup=Math.max(0,ruleGroup-1);storeLibrary();notify('删掉了规则组“'+group.name+'”。');});
+  $('grade-rule-add').onclick=action(()=>{const group=currentGroup();if(!group)return;if(group.rules.length>=RULES_PER_GROUP)throw new Error('这个规则组满了（ET 的规则表每组 100 行）');group.rules.push({name:'规则 '+(group.rules.length+1),x:'',y:''});storeLibrary();});
+  $('grade-rule-import').onchange=async()=>{const input=$('grade-rule-import'),file=input.files[0];if(!file)return;
+    try{const read=readRuleTable(new Uint8Array(await file.arrayBuffer()));library=normalizeLibrary({groups:[...library.groups,...read.groups]});ruleGroup=library.groups.length-read.groups.length;storeLibrary();notify('读进了 ET 的规则表：'+read.groups.length+' 个规则组，'+read.groups.reduce((sum,group)=>sum+group.rules.length,0)+' 条规则，加在原有的后面。');}
+    catch(error){notify(error.message);}finally{input.value='';}};
+  $('grade-rule-export').onclick=action(()=>{if(!library.groups.length)throw new Error('规则表还是空的');download(writeRuleTable(library),'MyRuleRecord.rtb','application/octet-stream');notify('存成了 ET 的规则表文件：关掉 ET，把它放进 ET 文件夹的 sys_dir（原来的文件先留一份），ET 的规则表就是它。');});
   $('grade-saved').onchange=action(()=>{selectedId=$('grade-saved').value;if(!selectedId){reset();refresh();render();return;}const plan=getProject().gradingPlans.find(plan=>plan.id===selectedId);draft=normalizeGradingPlan(plan);preview=gradingResults(getProject(),plan);draftEdited=false;baseChanged=false;loadFields();refresh();render();});
   for(const [id,key] of [['grade-name','name'],['grade-base-size','baseSize'],['grade-interpolation','interpolation']])$(id).oninput=()=>{if(!draft)return;draft[key]=$(id).value;if(key!=='name')pointKey='';invalidate();};
   $('grade-add-size').onclick=action(()=>{

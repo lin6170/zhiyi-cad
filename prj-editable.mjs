@@ -381,7 +381,6 @@ export function convertPrjToEditable(input, parsed, { makeId = () => crypto.rand
   if (report.marks.buttonRows || report.marks.buttonholeRows) report.notes.push('带入了 ' + [report.marks.buttonRows ? report.marks.buttonRows + ' 排扣子（' + report.marks.buttons + ' 个）' : '', report.marks.buttonholeRows ? report.marks.buttonholeRows + ' 排扣眼（' + report.marks.buttonholes + ' 个）' : ''].filter(Boolean).join('、') + '，位置、大小与原文件相同；保存为 ET 文件时写回成 ET 自己的扣子、扣眼。');
   if (report.marks.drills) report.notes.push('带入了 ' + report.marks.drills + ' 个打孔，位置与原文件相同。孔的大小在 ET 里是软件的设置，不在文件里，这里按 3 mm 画。');
   if (report.marks.notCarried) report.notes.push('有 ' + report.marks.notCarried + ' 排扣子、扣眼或打孔没有带入：' + (report.marks.readable ? report.marks.reasons.join('；') : '这部分记录没有读懂') + '。');
-  if (report.notches.bySizeName) report.notes.push('其中 ' + report.notches.bySizeName + ' 个刀口的位置在 ET 里是按尺寸表里的尺寸定的（' + [...new Set(report.notches.sizeNames)].join('、') + '），带入后位置不变，但不再跟着尺寸表变。');
   if (report.notches.notCarried) report.notes.push('有 ' + report.notches.notCarried + ' 个刀口没有带入：' + report.notches.reasons.join('；') + '。');
   if (report.notches.otherKinds) report.notes.push('有 ' + report.notches.otherKinds + ' 个刀口的记录是还不认识的种类，没有带入。');
   if (report.edgeLinesCarried) report.notes.push('有 ' + report.edgeLinesCarried + ' 条沿边的虚线（明线、折边线一类）按普通虚线带入：位置不变，但在 ET 里不再跟着那条边变。');
@@ -426,13 +425,17 @@ export function convertPrjToEditable(input, parsed, { makeId = () => crypto.rand
   // ---- sizes: the size names, the size table and the rules of the points become a grading plan of the drawing
   const grading = report.grading = carryEtGrading({ parsed, project, made, curves, tails, makeId, notchOfNode });
   if (grading.carried) {
-    report.notes.push('带入了放码：号型 ' + grading.sizeOrder.join('、') + '（基码 ' + grading.baseSize + '，' + grading.seriesUsed + ' 系列），尺寸表 ' + grading.tableRows + ' 项，' + grading.rules + ' 个点的放码规则'
+    if (grading.tableOnly) report.notes.push('带入了号型和尺寸表：号型 ' + grading.sizeOrder.join('、') + '（基码 ' + grading.baseSize + '，' + grading.seriesUsed + ' 系列，ET 的五组号型系列都保留），尺寸表 ' + grading.tableRows + ' 项；文件里还没有放码规则。已建成放码方案“' + grading.planName + '”，在放码面板里可以加规则，另存为 ET 文件时一起写回。');
+    else report.notes.push('带入了放码：号型 ' + grading.sizeOrder.join('、') + '（基码 ' + grading.baseSize + '，' + grading.seriesUsed + ' 系列），尺寸表 ' + grading.tableRows + ' 项，' + grading.rules + ' 个点的放码规则'
       + (grading.followers ? '，另有 ' + grading.followers + ' 个跟随点' : '') + '。已建成放码方案“' + grading.planName + '”，各码按 ET 的办法生成：有规则的点按公式移动，同一位置上没有规则的点跟着走，曲线在放码点之间整体转动缩放。'
       + (grading.seriesChanged ? '文件当前用的 ' + grading.inFile.series + ' 系列只有基码，这里按名称最多的 ' + grading.seriesUsed + ' 系列建立。' : '') + (grading.inFile.layers > 1 ? '原文件里存着 ' + grading.inFile.layers + ' 个码的图形，这里只读入基码，其余各码由方案生成。' : ''));
     if (grading.notCarried) report.notes.push('有 ' + grading.notCarried + ' 条放码规则没有带入：' + grading.reasons.join('；') + (grading.unknownNames.length ? '（' + grading.unknownNames.slice(0, 8).join('、') + '）' : '') + '。');
   } else if (grading.inFile.rules || grading.inFile.tableRows || grading.inFile.sizes.length > 1 || grading.inFile.layers > 1) {
     report.notes.push('文件里有放码数据（号型 ' + (grading.inFile.sizes.join('、') || '无') + '，尺寸表 ' + grading.inFile.tableRows + ' 项，' + grading.inFile.rules + ' 个点有规则），没有带入：' + (grading.reasons.join('；') || '没有可用的规则') + (grading.unknownNames.length ? '（' + grading.unknownNames.slice(0, 8).join('、') + '）' : '') + '。');
   } else if (!grading.inFile.readable) report.notes.push('文件里的号型、尺寸表和放码规则没有读懂，没有带入' + (grading.reasons.length ? '（' + grading.reasons.join('；') + '）' : '') + '。');
+  // v71: the longer notch records carry a grading rule of their own (two formulas over the size table; v52 took them for notches
+  // placed by a size): v56 carries those rules into the plan, so the notch moves by its formulas in every size
+  if (report.notches.bySizeName) report.notes.push('其中 ' + report.notches.bySizeName + ' 个刀口带着 ET 的放码规则（公式 ' + [...new Set(report.notches.sizeNames)].join('、') + '）' + (grading.carried && grading.notchRules ? '，已随放码方案带入，各码里按公式移动。' : '，没有带进放码方案，各码里这些刀口不按公式移动。'));
   // points recorded on a line between its drawn points are ET's grading points on lines (增加放码点): they come with the grading
   if (report.marks.linePoints) {
     const kept = grading.carried ? project.gradingPlans.find(plan => plan.id === grading.planId).anchors.filter(anchor => anchor.between !== undefined).length : 0, all = report.marks.linePoints;

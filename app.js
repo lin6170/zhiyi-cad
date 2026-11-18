@@ -42,7 +42,7 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=69';
+import { createCadCommands } from './cad-commands.mjs?v=72';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
 import { createConstructPanel } from './construct-ui.mjs';import { createSmartPen } from './smart-pen-ui.mjs';

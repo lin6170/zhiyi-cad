@@ -30,3 +30,11 @@
 #construct-tool.active,[data-tool=spline].active{background:var(--color-selected)}
 .dark-canvas .construct-panel{box-shadow:0 10px 30px #0008}
 .construct-status{white-space:pre-line}
+/* v72: a measurement in every size, as ET's table 要素检查: the base row marked, 层间差 columns tinted */
+.construct-table{margin:0 10px 8px;overflow-x:auto}
+.construct-table table{border-collapse:collapse;width:100%;font-size:var(--text-xs);font-variant-numeric:tabular-nums}
+.construct-table th,.construct-table td{border:1px solid var(--color-border);padding:3px 6px;text-align:right;white-space:nowrap}
+.construct-table thead th{background:var(--color-muted);color:var(--color-foreground);text-align:center;font-weight:600}
+.construct-table tbody th{text-align:left;font-weight:500}
+.construct-table td.step{color:var(--color-text-secondary);background:var(--color-selected)}
+.construct-table tr.base th,.construct-table tr.base td{background:var(--color-warning-bg);font-weight:600}
