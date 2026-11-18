@@ -42,7 +42,10 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=73';
+import { createCadCommands } from './cad-commands.mjs?v=74';
+import { createOffline } from './offline.mjs';
+import { createViewModes } from './view-keys.mjs';
+import { createHelp } from './help.mjs';
 import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
 import { createConstructPanel } from './construct-ui.mjs';import { createSmartPen } from './smart-pen-ui.mjs';
@@ -74,6 +77,7 @@ let controlEntityId = null, controlIndex = 0;
 let seamPreview = null, seamChoiceKey = '', seamChoices = [];
 let seamEdgeDefs=[],seamWidthsDraft=new Map(),seamRowsKey='',seamEdgeFocus=null;
 let notchPreview=null,notchSelectionKey='',notchBaseKey='';
+let viewModes=null,help=null;   // v74: ET's view modes and the help dialog
 const prjWritebackPanel=createPrjWritebackPanel({getProject:()=>project,getSession:()=>prjExportSession,
   canPreview:()=>!importPending&&!draft.length&&!gesture&&!constructionInput.hasPending()&&!tableEditor.isOpen()&&!recovery?.isOpen()&&['select','node'].includes(tool),download,notify});
 const prjEndpointPanel=createPrjEndpointPanel({getProject:()=>project,getSession:()=>prjEndpointSession,
@@ -711,12 +715,25 @@ function refreshControlEditor() {
 }
 // The assistant panel floats over the right of the canvas and the drafting tools over the left; fitted content stays in the part between them.
 function fitSpan(){const right=assistantPanel?.isOpen()?assistantPanel.element.offsetWidth+24:0,left=constructPanel?.isOpen()?constructPanel.element.offsetWidth+24:0,width=svg.clientWidth-left-right;return width>=240?{left,width}:{left:0,width:svg.clientWidth};}
+// v74: ET's 前画面 (F10) goes back to the view before; every change of view by a button, a key, the wheel or a drag is remembered.
+const views=[];let lastWheelView=0;
+function rememberView(){const last=views[views.length-1];if(last&&last.x===camera.x&&last.y===camera.y&&last.scale===camera.scale)return;views.push({...camera});if(views.length>30)views.shift();}
+function previousView(){const last=views.pop();if(!last){notify('没有前一个画面了。');return;}snapMatch=null;snapFailure=null;Object.assign(camera,last);render();}
+// v74: ET's 放大 (Z): the area boxed on the screen fills the window
+function boxToView(rect){
+  const w=Math.abs(rect.x1-rect.x0),h=Math.abs(rect.y1-rect.y0);if(w<6||h<6)return false;
+  rememberView();snapMatch=null;snapFailure=null;
+  const cx=(rect.x0+rect.x1)/2,cy=(rect.y0+rect.y1)/2,wx=(cx-camera.x)/camera.scale,wy=(camera.y-cy)/camera.scale;
+  camera.scale=Math.max(.001,Math.min(200,camera.scale*Math.min(svg.clientWidth/w,svg.clientHeight/h)));
+  camera.x=svg.clientWidth/2-wx*camera.scale;camera.y=svg.clientHeight/2+wy*camera.scale;render();return true;
+}
 function fit(entities = project.entities) {
   snapMatch=null;snapFailure=null;
   if(tool==='marker'&&(!Array.isArray(entities)||entities===project.entities))entities=markerPanel.frame();
   if(tool==='plot'&&(!Array.isArray(entities)||entities===project.entities))entities=plotPanel.frame();
   const candidates=(Array.isArray(entities)?entities:project.entities).map(entity=>tool==='node'&&selected.has(entity.id)&&entity.curve?{...entity,points:entity.curve.controlPoints}:entity);
   const box = bounds(candidates); if (!box) return;
+  rememberView();
   const span = fitSpan();
   camera.scale = Math.max(.001, Math.min((span.width - 100) / Math.max(box.width, 1), (svg.clientHeight - 100) / Math.max(box.height, 1), 20));
   camera.x = span.left + span.width / 2 - (box.minX + box.maxX) / 2 * camera.scale;
@@ -789,7 +806,7 @@ svg.addEventListener('pointerdown', event => {
   const p = world(event); pointer = snap(p,{bypass:event.altKey||space||event.button===1});
   if(snapFailure){notify('吸附未完成，未记录此点。请放大、切换模式或按 Alt 临时关闭。');render();return;}
   if (space || event.button === 1) {
-    gesture = { type: 'pan', start: { x: event.clientX, y: event.clientY }, camera: { ...camera } }; return;
+    rememberView();gesture = { type: 'pan', start: { x: event.clientX, y: event.clientY }, camera: { ...camera } }; return;
   }
   if(tool==='marker'){markerPanel.down(p);return;}
   if(tool==='plot')return;
@@ -900,9 +917,10 @@ svg.addEventListener('contextmenu',event=>{if(tool==='spline'){event.preventDefa
 svg.addEventListener('dblclick',event=>{if(tool==='spline'){event.preventDefault();finishSpline();}});
 svg.addEventListener('wheel', event => {
   event.preventDefault(); const r = svg.getBoundingClientRect();
+  if(Date.now()-lastWheelView>600)rememberView();lastWheelView=Date.now();
   zoom(Math.exp(-event.deltaY * .0015), {x:event.clientX-r.left,y:event.clientY-r.top});
 }, {passive:false});
-$('fit').onclick = fit; $('zoom-in').onclick = () => zoom(1.25); $('zoom-out').onclick = () => zoom(.8);
+$('fit').onclick = () => fit(); $('zoom-in').onclick = () => { rememberView(); zoom(1.25); }; $('zoom-out').onclick = () => { rememberView(); zoom(.8); };
 $('grid').onchange = render; $('filter').oninput = refresh;
 $('snap').onchange=()=>{if(!$('snap').checked)$('snap-mode').value='off';else if($('snap-mode').value==='off')$('snap-mode').value='endpoint';snapMatch=null;snapFailure=null;if(lastPointerWorld)pointer={...lastPointerWorld};render();};
 $('snap-mode').onchange=()=>{$('snap').checked=$('snap-mode').value!=='off';snapMatch=null;snapFailure=null;if(lastPointerWorld)pointer={...lastPointerWorld};render();};
@@ -1248,6 +1266,7 @@ $('demo').onclick=()=>{
   value.warnings=['示例用于体验绘图操作，未经服装版型验证。'];loadProject(value);
 };
 window.addEventListener('keydown',event=>{
+  if(help?.isOpen())return;   // v74: the help dialog keeps its own keys (Esc closes it)
   if(pantsPanel?.isOpen()||draftPanel?.isOpen()){if((event.ctrlKey||event.metaKey)&&['s','z'].includes(event.key.toLowerCase()))event.preventDefault();return;}
   if(prjLinePanel.isOpen()||prjNewPanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
   if(prjSavePanel.isOpen()){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();return;}
@@ -1258,6 +1277,7 @@ window.addEventListener('keydown',event=>{
   if(tableEditor.isOpen())return;
   if($('dxf-settings').open)return;
   if(['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName))return;
+  if(viewModes?.active()&&event.key==='Escape'){event.preventDefault();viewModes.cancel();return;}   // v74: Esc ends ET's 放大, 屏幕移动, 单片全屏
   if(tool==='smart'&&smartPen?.key(event)){event.preventDefault();return;}
   if(tool==='plot'&&(['Delete','Backspace'].includes(event.key)||(event.ctrlKey||event.metaKey)&&['a','g'].includes(event.key.toLowerCase()))){event.preventDefault();return;}
   if(tool==='marker'){
@@ -1270,18 +1290,31 @@ window.addEventListener('keydown',event=>{
     if(event.key.toLowerCase()==='g'){event.preventDefault();event.shiftKey?$('ungroup').click():makeGroup();}
     if(event.key.toLowerCase()==='s'){event.preventDefault();save();}
     if(event.key.toLowerCase()==='z'){event.preventDefault();event.shiftKey?redo():undo();}
+    if(['x','y'].includes(event.key.toLowerCase())&&!event.shiftKey){event.preventDefault();redo();}   // v74: ET's 恢复 is Ctrl+X; Ctrl+Y as in Windows
+    if(event.key.toLowerCase()==='o'){event.preventDefault();$('file').click();}   // v74: ET's 打开
+    if(event.key.toLowerCase()==='p'){event.preventDefault();$('plot-tool').click();}   // v74: ET's 打印 opens 出图
     return;
   }
+  // v74: ET's function keys: F2 保存, F3 打开, F7 单片全屏, F10 前画面; ? opens the help
+  if(event.key==='F2'){event.preventDefault();save();return;}
+  if(event.key==='F3'){event.preventDefault();$('file').click();return;}
+  if(event.key==='F7'){event.preventDefault();viewModes?.begin('piece');return;}
+  if(event.key==='F10'){event.preventDefault();previousView();return;}
+  if(event.key==='?'){event.preventDefault();help?.open();return;}
   if(event.code==='Space'){event.preventDefault();space=true;svg.style.cursor='grab';}
   if(event.key==='Escape'){cancelGesture();draft=[];selected=new Set();$('measurement').hidden=true;setTool('select');refresh();}
   if(event.key==='Enter'&&tool==='polyline'&&draft.length>=2){try{finishPolyline(false);}catch(error){notify(error.message);}}
   if(event.key==='Enter'&&tool==='spline'){event.preventDefault();finishSpline();return;}
   if(tool==='spline'&&draft.length&&event.key==='Backspace'){event.preventDefault();draft=draft.slice(0,-1);render();return;}
   if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();remove();}
-  const keys={v:'select',n:'node',l:'line',p:'polyline',c:'curve',s:'spline',r:'rectangle',m:'measure',g:'grain'};
-  if(keys[event.key.toLowerCase()])setTool(keys[event.key.toLowerCase()]);
+  if(event.altKey)return;   // Alt with a letter is none of the page's keys
+  const keys={n:'node',l:'line',p:'polyline',s:'spline',r:'rectangle',m:'measure',g:'grain'},letter=event.key.toLowerCase();   // v74: V and C went to ET's 全屏 and 屏幕移动
+  if(keys[letter])setTool(keys[letter]);
   if(event.key==='`'||event.key==='~')$('smart-tool').click();
-  if(event.key.toLowerCase()==='f')fit();
+  if(letter==='f'||letter==='v')fit();   // v74: V is ET's 全屏
+  if(letter==='x'){rememberView();zoom(.8);}   // v74: ET's 缩小
+  if(letter==='z')viewModes?.begin('zoom');   // v74: ET's 放大
+  if(letter==='c')viewModes?.begin('pan');   // v74: ET's 屏幕移动
 });
 window.addEventListener('keyup',event=>{if(event.code==='Space'){space=false;svg.style.cursor='default';}});
 window.addEventListener('blur',()=>{space=false;cancelGesture();});
@@ -1296,7 +1329,7 @@ cadCommands=createCadCommands({getProject:()=>project,getRevision:()=>projectRev
 Object.defineProperty(window,'zhiyiCAD',{value:cadCommands,writable:false,configurable:false});
 draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRevision,download,reveal:()=>{refresh();fit();},savePrj:()=>{refresh();fit();prjNewPanel.open();}});
 const draftEntry=document.createElement('button');draftEntry.id='draft-open';draftEntry.textContent='尺寸自动制版';draftEntry.setAttribute('aria-haspopup','dialog');draftEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');draftPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(draftEntry);
-const draftWelcome=document.createElement('button');draftWelcome.id='welcome-draft';draftWelcome.textContent='输入尺寸，生成新纸样';draftWelcome.className='primary';draftWelcome.onclick=()=>draftEntry.click();$('welcome-open').before(draftWelcome);
+const draftWelcome=document.createElement('button');draftWelcome.id='welcome-draft';draftWelcome.textContent='输入尺寸，生成新纸样';draftWelcome.onclick=()=>draftEntry.click();$('welcome-more').append(draftWelcome);   // v74: opening an ET file leads the welcome
 assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),getSelection:()=>[...selected],
   prepare:()=>{if(!importPending&&!gesture&&!draft.length&&!['select','node'].includes(tool))setTool('select');},onApplied:()=>{refresh();pantsPanel?.noteApplied();},   /* v73: a pants length the assistant changed can be saved from the 自动改裤长 panel */
   hostActions:{'view.fit':()=>{refresh();fit();},'file.savePrj':()=>{refresh();fit();prjNewPanel.open();},'file.exportDxf':()=>{$('export').click();},'file.saveProject':()=>{save();}}});
@@ -1317,8 +1350,16 @@ prjEditablePanel=createPrjEditablePanel({host:$('workspace'),getProject:()=>proj
 $('construct-tool').onclick=()=>{if(!importPending&&!gesture&&!draft.length)constructPanel.begin();else notify('请先完成或取消当前编辑。');};
 const assistantEntry=document.createElement('button');assistantEntry.id='assistant-open';assistantEntry.textContent='AI 助手';assistantEntry.setAttribute('aria-pressed','false');assistantEntry.onclick=()=>{assistantPanel.toggle();assistantEntry.setAttribute('aria-pressed',String(assistantPanel.isOpen()));};document.querySelector('.file-actions').append(assistantEntry);
 $('assistant-close').addEventListener('click',()=>assistantEntry.setAttribute('aria-pressed','false'));
-const assistantWelcome=document.createElement('button');assistantWelcome.id='welcome-assistant';assistantWelcome.textContent='说一句话，让助手画';assistantWelcome.onclick=()=>{if(!assistantPanel.isOpen())assistantEntry.click();};$('welcome-open').before(assistantWelcome);
+const assistantWelcome=document.createElement('button');assistantWelcome.id='welcome-assistant';assistantWelcome.textContent='说一句话，让助手画';assistantWelcome.onclick=()=>{if(!assistantPanel.isOpen())assistantEntry.click();};$('welcome-more').append(assistantWelcome);
 pantsPanel=createPantsPanel({commands:cadCommands,getSource:()=>pantsSource,getProject:()=>project,getRevision:()=>projectRevision,setSession:s=>{pantsSession=s;},getSession:()=>pantsSession,download});
 const pantsEntry=document.createElement('button');pantsEntry.id='pants-open';pantsEntry.textContent='自动改裤长';pantsEntry.setAttribute('aria-haspopup','dialog');pantsEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');pantsPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(pantsEntry);
 const pantsSaveEntry=document.createElement('section');pantsSaveEntry.innerHTML='<h3>自动裤长改版</h3><p>为当前裤装指定前后片、膝线和裤脚，或载入已有规则；预览、应用和撤销后保存独立 PRJ。</p><button id="prj-save-pants">打开裤长改版</button>';$('prj-save-dialog').append(pantsSaveEntry);$('prj-save-pants').onclick=()=>{$('prj-save-dialog').close();pantsEntry.click();};
+// v74: ET's view modes (放大, 屏幕移动, 单片全屏), the help, the offline copy and installing the page
+function pieceAt(point){const rect=svg.getBoundingClientRect(),found=hit(world({clientX:rect.left+point.x,clientY:rect.top+point.y}))?.entity;if(!found)return null;const group=(project.groups||[]).find(g=>g.entityIds.includes(found.id));return group?project.entities.filter(e=>group.entityIds.includes(e.id)):[found];}
+viewModes=createViewModes({host:$('workspace'),svg,notify,view:{boxToView,panBy:(dx,dy)=>{snapMatch=null;snapFailure=null;camera.x+=dx;camera.y+=dy;render();},zoomAt:(factor,point)=>zoom(factor,point),pieceAt,fitEntities:list=>fit(list),remember:rememberView}});
+const offline=createOffline({status:[$('offline-status')],installButtons:[$('install-app')],header:document.querySelector('header .document'),host:$('workspace'),notify});
+help=createHelp({host:document.body,offline,tryPhrase:text=>{if(!assistantPanel.isOpen())assistantEntry.click();const input=$('assistant-input');input.value=text;input.focus();}});
+const helpEntry=document.createElement('button');helpEntry.id='help-open';helpEntry.textContent='帮助';helpEntry.title='快捷键（和 ET 对照）、助手能听懂的说法、离线使用（按 ? 也能打开）';helpEntry.setAttribute('aria-haspopup','dialog');helpEntry.onclick=()=>help.open();$('theme').before(helpEntry);
+$('welcome-help').onclick=()=>help.open();
+offline.start();
 new ResizeObserver(render).observe(svg);refresh();
