@@ -82,6 +82,14 @@ class Writer {
   list(values) { this.u32(values.length); for (const value of values) this.u32(value); return this; }
   done() { const out = new Uint8Array(this.length); let o = 0; for (const part of this.parts) { out.set(part, o); o += part.length; } return out; }
 }
+// v76: the stretch factors a shrunk piece carries: those the page applied, else those of the ET file it came from, else from the note
+function shrinkFactorsOf(attributes) {
+  const s = attributes.shrink;
+  if (s && Number.isFinite(s.warp) && Number.isFinite(s.weft)) return [Math.fround(1 / (1 - s.warp / 100)), Math.fround(1 / (1 - s.weft / 100))];
+  if (Array.isArray(attributes.shrinkFactors) && attributes.shrinkFactors.length === 2) return attributes.shrinkFactors;
+  const m = String(attributes.shrinkNote || '').match(/[经横]\s*[:：]\s*(-?\d+(?:\.\d+)?)%.*[纬纵]\s*[:：]\s*(-?\d+(?:\.\d+)?)%/);
+  return m ? [Math.fround(1 / (1 - Number(m[1]) / 100)), Math.fround(1 / (1 - Number(m[2]) / 100))] : [1, 1];
+}
 const IDENTITY_TRANSFORM = (() => {
   const w = new Writer();
   for (let block = 0; block < 2; block++) { for (let i = 0; i < 13; i++) w.f32(i % 4 === 0 ? 1 : 0); w.bytes([0, 0, 0, 1]); }
@@ -143,13 +151,15 @@ export function encodeNewPrj(model) {
     });
     w.u32(L.pieces.length);
     L.pieces.forEach((piece, index) => {
-      w.u32(piece.id).bytes(WHITE).u8(0x20).zero(13).u32(1).u32(piece.id2).bytes(WHITE).u32(piece.id2);
+      w.u32(piece.id).bytes(WHITE).u8(piece.shrinkNote ? 0x24 : 0x20).zero(13).u32(1).u32(piece.id2).bytes(WHITE).u32(piece.id2);   // v76: ET sets 0x04 on a piece with a shrink note
       w.string(h.style).string(piece.name).string(L.name).string(piece.material).u32(piece.materialCode).string(piece.symmetric ? '对称' : '不对称');
       w.u32(piece.count).u32(piece.symmetric ? piece.count : 0).f32(piece.angle).u32(0).string(piece.label).u32(piece.mode);
-      w.point(piece.center).point(piece.end1).u32(0).point(piece.center).point(piece.end2).u32(0).u16(0);
+      // v76: the shrink note (empty: the same six zero bytes as before)
+      w.point(piece.center).point(piece.end1).u32(0).point(piece.center).point(piece.end2).string(piece.shrinkNote || '').u32(0);
       w.u32(1).u8(0).u8(0).list(piece.chain).u32(index + 1);
       w.list(piece.ownedCurves).list([...piece.ownedCurves.flatMap(curve => [curve * 2 - 1, curve * 2]), ...(piece.points || [])]).list(piece.corners).list(piece.texts).list(piece.rows || []);
       w.bytes(IDENTITY_TRANSFORM);
+      if (piece.shrinkNote) w.f32(piece.shrinkFactors[0]).f32(piece.shrinkFactors[1]);   // v76: as ET writes a shrunk piece
     });
     w.u32(L.texts.length);
     for (const text of L.texts) {
@@ -294,17 +304,18 @@ export function readNewPrj(input) {
     const pieceCount = u32(); if (pieceCount > 10000) fail('裁片数量异常');
     const pieces = [];
     for (let i = 0; i < pieceCount; i++) {
-      const piece = { id: u32() }; white('裁片'); expect(0x20, u8(), '裁片'); zeros(13, '裁片'); expect(1, u32(), '裁片'); piece.id2 = u32(); white('裁片'); expect(piece.id2, u32(), '裁片');
+      const piece = { id: u32() }; white('裁片'); const pieceFlag = u8(); if (pieceFlag !== (piece.shrinkNote === undefined ? pieceFlag : pieceFlag) || (pieceFlag !== 0x20 && pieceFlag !== 0x24)) fail('裁片标记不符'); zeros(13, '裁片'); expect(1, u32(), '裁片'); piece.id2 = u32(); white('裁片'); expect(piece.id2, u32(), '裁片');
       literal(header.style, '裁片款式'); piece.name = string(); literal(sizeName, '裁片号型'); piece.material = string(); piece.materialCode = u32(); if (!piece.material || piece.materialCode > 100000) fail('裁片布料不符');
       const symmetry = string(); if (!['对称', '不对称'].includes(symmetry)) fail('裁片对称属性不符'); piece.symmetric = symmetry === '对称';
       piece.count = u32(); if (piece.count < 1 || piece.count > 999) fail('裁片片数异常'); expect(piece.symmetric ? piece.count : 0, u32(), '裁片对称'); piece.angle = f32(); if (!Number.isFinite(piece.angle)) fail('裁片角度异常'); expect(0, u32(), '裁片'); piece.label = string(); if (!piece.label.startsWith('MD')) fail('裁片标签不符'); piece.mode = u32();
-      piece.center = point(); piece.end1 = point(); expect(0, u32(), '布纹'); const again = point(); if (again.x !== piece.center.x || again.y !== piece.center.y) fail('布纹中心不一致'); piece.end2 = point(); expect(0, u32(), '布纹'); expect(0, u16(), '裁片');
+      piece.center = point(); piece.end1 = point(); expect(0, u32(), '布纹'); const again = point(); if (again.x !== piece.center.x || again.y !== piece.center.y) fail('布纹中心不一致'); piece.end2 = point(); piece.shrinkNote = string(); expect(0, u32(), '裁片');
       expect(1, u32(), '轮廓数量'); expect(0, u8(), '轮廓'); expect(0, u8(), '轮廓'); piece.chain = list(); expect(i + 1, u32(), '轮廓归属');
       piece.ownedCurves = list(); const ownedNodes = list();
       const lineEnds = nodes.length + notches.length; piece.points = ownedNodes.filter(n => n > lineEnds);
       if (canonical(ownedNodes.filter(n => n <= lineEnds)) !== canonical(piece.ownedCurves.flatMap(curve => [curve * 2 - 1, curve * 2])) || piece.points.some(n => n > lineEnds + points.length)) fail('裁片节点引用不符');
       piece.corners = list(); piece.texts = list(); piece.rows = list();
       need(112); for (let k = 0; k < 112; k++) if (bytes[o + k] !== IDENTITY_TRANSFORM[k]) fail('裁片变换不符'); o += 112;
+      if (pieceFlag === 0x24) { piece.shrinkFactors = [f32(), f32()]; if (!piece.shrinkFactors.every(v => Number.isFinite(v) && v > 0)) fail('裁片缩水系数异常'); }
       pieces.push(piece);
     }
     const textCount = u32(); if (textCount > 10000) fail('文字数量异常');
@@ -671,6 +682,7 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
           const { narrow } = jointSides(f), ventWalk = walkPoints(k), a = item.a / MM_PER_UNIT, b = item.b / MM_PER_UNIT;
           const vent = topAtEnd ? { tangent: f.arriving.tangent, normal: right(f.arriving.tangent), width: edge.width, points: [...ventWalk].reverse() }
             : { tangent: negate(f.leaving.tangent), normal: right(f.leaving.tangent), width: edge.width, points: ventWalk };
+          if (edge.kind === 'spline' && edge.data?.fit?.length > 2) vent.fit = edge.data.fit.map(q => ({ x: q.x, y: q.y }));   // v75: a curved vent is mirrored from its fit points, as ET does
           const hemEdge = topAtEnd ? h.first : h.second, hemTangent = topAtEnd ? h.arriving.tangent : h.leaving.tangent;
           const made = ventShape(item.kind, f.P, vent, narrow, { seamPoint: add(h.P, right(hemTangent), hemEdge.width), tangent: hemTangent }, { a, b, c: (item.c || 0) / MM_PER_UNIT, d: (item.d || 0) / MM_PER_UNIT });
           // ET writes the parts that run down to the hem in the vent edge's own direction; the vent's own seam line becomes the dashed fold
@@ -886,7 +898,7 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
       if (cut.materialCode === null) throw new Error('裁片“' + spec.group.name + '”的布料“' + material + '”没有已知的 ET 布料编号。可以用的布料：' + Object.keys(MATERIAL_CODES).join('、') + '。');
       encodeGbk(material);
       model.pieces.push({ id: 0, id2: 0, name: spec.group.name, symmetric: spec.group.source?.kind === 'parametric-demo' || attributes.symmetric === true, material, materialCode: cut.materialCode,
-        count: cut.count, angle: Math.fround(attributes.et?.angle || 0), label: attributes.et?.label || 'MD', mode, center: round(center), end1: round(end1), end2: round(end2),
+        count: cut.count, angle: Math.fround(attributes.et?.angle || 0), label: attributes.et?.label || 'MD', mode, center: round(center), end1: round(end1), end2: round(end2), shrinkNote: typeof attributes.shrinkNote === 'string' ? attributes.shrinkNote : '', ...(attributes.shrinkNote ? { shrinkFactors: shrinkFactorsOf(attributes) } : {}),
         chain, ownedCurves: [...chain, ...internal, ...seams], corners: Array.from({ length: model.corners.length - cornerFirst + 1 }, (_, i) => cornerFirst + i), texts, points: [], rows: [] });
       report.pieces.push({ name: spec.group.name, material, count: model.pieces.at(-1).count, contourEdges: count, internalLines: internal.length, texts: texts.length, hasSeam,
         seamWidthsMm: [...new Set(traversal.map(edge => +(edge.width * MM_PER_UNIT).toFixed(3)))].sort((a, b) => a - b), symmetric: spec.group.source?.kind === 'parametric-demo' || spec.group.attributes?.symmetric === true });
@@ -983,12 +995,14 @@ export function planNewPrj(project, { now = new Date(), identityStart = Math.flo
   for (const text of model.texts) text.id = id();
   for (const row of model.rows) row.id = id();
   if (layers) lockedLayers(project, model, report, notes, { now, identityStart }, recordsOf, id);
-  const unsupported = [];
-  if (project.seamChecks?.length) unsupported.push('对缝检查');
-  if (project.gradingPlans?.some(plan => plan.method !== 'table') || project.grading?.length) unsupported.push('逐点输入位移的放码方案');
-  if (project.markerPlans?.length || project.markers?.length) unsupported.push('排料方案');
-  if (project.plot || project.plotSettings) unsupported.push('出图设置');
-  if (unsupported.length) report.omitted.push(unsupported.join('、') + '不属于 PRJ 纸样数据，请同时保存工程');
+  // v75: what this writer cannot write yet is not said to be outside the PRJ; only what ET keeps elsewhere or not at all is
+  const notYet = [], notPrj = [];
+  if (project.gradingPlans?.some(plan => plan.method !== 'table') || project.grading?.length) notYet.push('逐点输入位移的放码方案');
+  if (project.seamChecks?.length) notPrj.push('对缝检查');
+  if (project.markerPlans?.length || project.markers?.length) notPrj.push('排料方案');
+  if (project.plot || project.plotSettings) notPrj.push('出图设置');
+  if (notYet.length) report.omitted.push(notYet.join('、') + '现在还不能写进 ET 文件，请同时保存工程');
+  if (notPrj.length) report.omitted.push(notPrj.join('、') + '不属于 PRJ 纸样数据，请同时保存工程');
   Object.assign(report, { curves: model.curves.length, lines: model.curves.filter(c => c.kind === 2).length, splines: model.curves.filter(c => c.kind === 4).length,
     nodes: model.nodes.length, texts: model.texts.length, seamCurves: model.curves.filter(c => c.flags[2] === 2).length, corners: model.corners.length });
   return { model, report };

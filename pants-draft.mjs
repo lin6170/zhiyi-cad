@@ -1,6 +1,10 @@
 import {bounds,length,validateProject,transform} from './geometry.mjs';
 import {refreshCurve} from './curves.mjs';
 import {generateAllowance,applyAllowance,syncAllowances,SHARP_CORNER_LIMIT} from './seams.mjs';
+import {draftPantsSet,partFields,defaultParts,validateParts} from './pants-set.mjs';
+import {validateGrading,gradeTrouser,defaultGrading,sizeInputs,GRADE_FIELDS,gradingDigest} from './pants-grading.mjs';
+export {defaultGrading,GRADE_FIELDS,gradingDigest};
+export {partFields,defaultParts};
 
 export const DRAFT_COMMAND='pattern.draftStraightPants';
 export const DRAFT_SCHEMA='zhiyi-straight-pants-demo/v1';
@@ -14,7 +18,7 @@ export const draftFields={
     ['hipDepth','腰线至臀线',200,100,350,'竖直距离，使用同一腰线基准'],
     ['crotchDepth','坐姿裆深',280,180,450,'腰侧至椅面竖直距离，不是前后裆弧长'],
     ['kneeDepth','腰线至膝线',600,350,850,'竖直距离，使用同一腰线基准'],
-    ['length','目标裤长',1040,700,1300,'腰侧至脚口的侧缝弧长，不含另加腰头']
+    ['length','目标裤长',1040,700,1300,'腰侧至脚口的侧缝弧长，不含另加腰头（整套裤子的成品总长 = 裤长 + 腰头宽；师傅说的裤长含腰头时，填减去腰头宽后的值）']
   ],
   rules:[
     ['waistEase','腰围松量',20,0,120,'整圈加量'],
@@ -36,10 +40,11 @@ export const draftFields={
     ['backDartLength','后省长',120,60,200,'从腰口向片内']
   ]
 };
-export const defaultDraftInput=()=>Object.fromEntries(Object.entries(draftFields).map(([type,fields])=>[type,Object.fromEntries(fields.map(([key,,value])=>[key,value]))]));
+// v76: with { parts: true } the input also has the parts of a whole trouser (waistband, fly, pockets, loops); without, only the front and back
+export const defaultDraftInput=({parts=false}={})=>({...Object.fromEntries(Object.entries(draftFields).map(([type,fields])=>[type,Object.fromEntries(fields.map(([key,,value])=>[key,value]))])),...(parts?{parts:defaultParts()}:{})});
 const clone=x=>JSON.parse(JSON.stringify(x)),point=(x,y)=>({x,y:-y||0});
 export function validateDraftInput(input){
-  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['measurements','rules'].includes(k)))throw Error('尺寸方案格式无效。');
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['measurements','rules','parts','grading'].includes(k)))throw Error('尺寸方案格式无效。');
   for(const [type,fields] of Object.entries(draftFields)){
     const obj=input[type];if(!obj||typeof obj!=='object'||Array.isArray(obj)||Object.keys(obj).length!==fields.length)throw Error('尺寸方案的字段不完整。');
     for(const [key,label,,min,max] of fields){const n=obj[key];if(typeof n!=='number'||!Number.isFinite(n)||n<min||n>max||Math.abs(n*10-Math.round(n*10))>1e-6)throw Error(label+'须在 '+min+'～'+max+' '+(fields.find(f=>f[0]===key)[6]==='percent'?'%':'mm')+' 内，最多一位小数。');}
@@ -51,14 +56,29 @@ export function validateDraftInput(input){
   if(extension<50||extension>260)throw Error('大腿围与臀围不适合此演示规则：总裆伸出量须在 50～260 mm 内。请核对净量与松量。');
   if(r.kneeCirc>m.thigh+r.thighEase-60||r.hemCirc>r.kneeCirc+80)throw Error('膝围/脚口超过基础裤装范围，请核对成衣单腿周长。');
   if(r.frontDartWidth&&r.frontDartLength>=m.hipDepth-20||r.backDartWidth&&r.backDartLength>=m.hipDepth-20)throw Error('省尖过于接近臀线，请减少省长或核对臀深。');
-  return clone(input);
+  const result=clone(input);if('parts' in input)result.parts=validateParts(input.parts);
+  // v77: grading (a whole trouser only): every size must make a trouser by the same rules
+  if('grading' in input){
+    if(!('parts' in input))throw Error('整套放码只用于带部件的整套裤子。');
+    result.grading=validateGrading(input.grading);
+    for(const size of sizeInputs(result)){if(size.offset===0)continue;const {grading,...plain}=size.input;try{validateDraftInput(plain);}catch(error){throw Error('号型 '+size.label+'：'+error.message);}}
+  }
+  return result;
 }
 function curve(points,id,name,layer='outline'){
   const e={id,name,type:'polyline',closed:false,layer,points:[],curve:{kind:'bspline',degree:3,controlPoints:points,knots:[0,0,0,0,1,1,1,1],samplingTolerance:.01}};
   return refreshCurve(e);
 }
-export function draftStraightPants(input,{makeId=()=>crypto.randomUUID()}={}){
-  input=validateDraftInput(input);const m=input.measurements,r=input.rules,s=r.frontShare/100;
+export function draftStraightPants(input,{makeId=()=>crypto.randomUUID(),deriveGrading=true}={}){
+  input=validateDraftInput(input);
+  if(input.parts){
+    const {stationLayout,...made}=draftPantsSet(input,{makeId});if(!input.grading||!deriveGrading)return {...made,input};   // deriveGrading false: the drawing alone (a baseline to compare with)
+    // v77: the grading plan from the trouser's own formulas, and every size checked (pants-grading.mjs)
+    let serial=0;const scratch=()=>'grade-draft-'+(++serial);
+    const graded=gradeTrouser(input,made.project,{draft:sizeInput=>draftPantsSet(sizeInput,{makeId:scratch,geometryOnly:true,stations:stationLayout}),makeId,roles:made.report.roles,params:made.report.params});
+    return {...made,input,gradingPlan:graded.plan,report:{...made.report,grading:graded.report}};
+  }
+  const m=input.measurements,r=input.rules,s=r.frontShare/100;
   const project={format:'zhiyi-cad',version:6,name:'成人基础裤 · 公式演示',units:'mm',entities:[],groups:[],seamAllowances:[]},pieces=[];
   const totals={waist:m.waist+r.waistEase,hip:m.hip+r.hipEase,thigh:m.thigh+r.thighEase};
   const extension=totals.thigh-totals.hip/2,rise=m.crotchDepth+r.riseEase;
@@ -146,7 +166,14 @@ export function appendPantsDraft(before,input,makeId){
   if(dx)for(const e of generated.project.entities)transform(e,p=>({x:p.x+dx,y:p.y}));
   next.units='mm';if(!next.entities.length)next.name='成人基础裤 · 公式演示';
   next.entities.push(...generated.project.entities);next.groups.push(...generated.project.groups);next.seamAllowances??=[];next.seamAllowances.push(...generated.project.seamAllowances);
+  if(generated.project.notches?.length){next.notches??=[];next.notches.push(...generated.project.notches);}
+  // v77: the grading plan of the trouser; a drawing has one set of sizes and one size table (as in ET)
+  let gradingPlanId=null;
+  if(generated.gradingPlan){
+    if((before.gradingPlans||[]).some(p=>p.method==='table'))throw Error('这张图已经有按尺寸表放码的方案（一张图只有一套号型和尺寸表）。请在没有放码的图上生成整套放码，或先删除原来的放码。');
+    gradingPlanId=makeId();next.gradingPlans=[...(next.gradingPlans||[]),{id:gradingPlanId,...generated.gradingPlan}];next.version=Math.max(next.version,8);
+  }
   next.version=Math.max(next.version,6);next.warnings=[...new Set([...(next.warnings||[]),...generated.project.warnings])];
-  next.metadata??={};next.metadata.parametricDrafts??=[];next.metadata.parametricDrafts.push({id:makeId(),schema:DRAFT_SCHEMA,input:generated.input,report:generated.report,entityIds:generated.project.entities.map(e=>e.id),groupIds:generated.project.groups.map(g=>g.id)});
-  return {project:next,summary:{operation:DRAFT_COMMAND,recipe:DRAFT_SCHEMA,newPieces:2,generatedFromMeasurements:true,report:generated.report},measurements:generated.report.checks};
+  next.metadata??={};next.metadata.parametricDrafts??=[];next.metadata.parametricDrafts.push({id:makeId(),schema:DRAFT_SCHEMA,input:generated.input,report:generated.report,entityIds:generated.project.entities.map(e=>e.id),groupIds:generated.project.groups.map(g=>g.id),...(generated.project.notches?.length?{notchIds:generated.project.notches.map(n=>n.id)}:{}),...(gradingPlanId?{gradingPlanId,gradingDigest:gradingDigest(generated.gradingPlan)}:{})});
+  return {project:next,summary:{operation:DRAFT_COMMAND,recipe:DRAFT_SCHEMA,newPieces:generated.project.groups.length,generatedFromMeasurements:true,report:generated.report},measurements:generated.report.checks};
 }

@@ -1,6 +1,7 @@
 import Clipper from './vendor/clipper.mjs';
 import { distance } from './geometry.mjs';
 import { sampleCurve } from './curves.mjs';
+import { nativeFitPoints } from './fit-spline.mjs';
 import { contoursForGroup, orientChain } from './topology.mjs';
 import { assertNotchTransform } from './notches.mjs';
 import { normalizeEdgeWidths, normalizeCorners, normalizeExtension, extensionWidthMap, edgeWidthMap, edgeKey } from './seam-widths.mjs';
@@ -140,7 +141,8 @@ function cornerShapes(ordered,widthMap,corners,project){
         if(!top)throw new Error('开叉要做在比相接的边缝份宽、与它接近相切的边上（例如开衩的边）');
         const hemFrame=top===atEnd?atStart:atEnd,{wide,narrow}=jointSides(top),hemEdge=top===atEnd?hemFrame.first:hemFrame.second;
         const hemTangent=top===atEnd?hemFrame.arriving.tangent:hemFrame.leaving.tangent,hemCorner=hemFrame.vertex;
-        const vent={...wide,points:top===atEnd?[...edges[k].points].reverse():edges[k].points};
+        const ventEntity=ordered.find(item=>item.entity.id===edges[k].entityId)?.entity,ventFit=ventEntity?.curve?nativeFitPoints(ventEntity.curve):null;   // v75: a curved vent is mirrored from its fit points, as ET does
+        const vent={...wide,points:top===atEnd?[...edges[k].points].reverse():edges[k].points,...(ventFit&&ventFit.length>2?{fit:ventFit}:{})};
         const made=ventShape(item.kind,top.vertex,vent,narrow,{seamPoint:{x:hemCorner.x+rightOf(hemTangent).x*hemEdge.width,y:hemCorner.y+rightOf(hemTangent).y*hemEdge.width},tangent:hemTangent},item);
         keep(top.v,{region:made.region,cut:made.zone,lines:[{points:made.foldLine,dashed:true},...made.lines],v:top.v,vertex:top.vertex});
         if(taken.has(hemFrame.v))throw new Error('同一个转角有两种角处理');taken.add(hemFrame.v);

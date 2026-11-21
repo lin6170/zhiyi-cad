@@ -26,6 +26,13 @@ import { closeContourGaps } from './contour-heal.mjs';
 import { contoursForGroup } from './topology.mjs';
 
 export const EDITABLE_SOURCE_FORMAT = 'ET PRJ experimental';
+/**
+ * v75: the readers of ET's 3.0 and 5.0 layouts give the same format name, with a layout; only the 2.0 ("08") layout, which
+ * has none, can be turned into an editable project. Up to v74 a 5.0 file was offered the conversion and then refused it with
+ * "曲线记录无法读取". The name of a layout as the page shows it.
+ */
+export const editableLayout = metadata => metadata?.format === EDITABLE_SOURCE_FORMAT && !metadata.layout;
+export const layoutName = metadata => metadata?.layout === 'native-v5-7248' ? '5.0 布局' : metadata?.layout === 'legacy-7248' ? '3.0 布局' : metadata?.layout ? '其他布局' : '08 版（2.0）布局';
 const MM = 10; // millimetres per file unit
 const HEAL_LIMIT = 1; // mm: ends of neighbouring contour edges this close are brought together, as ET treats them as joined
 const scale = p => ({ x: p.x * MM, y: p.y * MM });
@@ -105,12 +112,13 @@ export function notchNodes(bytes, nodes, sectionEnd) {
   (nodes || []).forEach((node, i) => {
     if (node.recordType !== 7) return;
     const length = (nodes[i + 1]?.offset ?? sectionEnd) - node.offset, o = node.offset + 34;
-    if (length > 84 && length < 400) {
+    if (length > 84 && length < 2400) {
       // A notch whose distance is a size of the size table has the size name and a block of numbers between the distance and
       // the fixed "1"; the rest is read from the end of the record. Its place and direction are those of an ordinary notch.
-      // two texts follow the distance (either may be empty), then 46 bytes of numbers
-      const end = node.offset + length, first = view.getUint16(o + 5, true), second = first < 64 ? view.getUint16(o + 7 + first, true) : 999;
-      if (view.getUint32(end - 41, true) === 1 && view.getUint32(end - 4, true) === 0 && bytes[end - 33] <= 1 && [0, 2].includes(view.getUint32(end - 32, true)) && first + second > 0 && second < 64 && 34 + 5 + 4 + first + second + 46 + 41 === length) {
+      // two texts follow the distance (either may be empty), then 46 bytes of numbers; v77: a text may be up to 1024 bytes (formulas
+      // derived from a whole trouser's drafting have many terms)
+      const end = node.offset + length, first = view.getUint16(o + 5, true), second = first < 1024 && o + 9 + first <= end ? view.getUint16(o + 7 + first, true) : 9999;
+      if (view.getUint32(end - 41, true) === 1 && view.getUint32(end - 4, true) === 0 && bytes[end - 33] <= 1 && [0, 2].includes(view.getUint32(end - 32, true)) && first + second > 0 && second < 1024 && 34 + 5 + 4 + first + second + 46 + 41 === length) {
         const text = (at, size) => { try { return new TextDecoder('gb18030', { fatal: true }).decode(bytes.subarray(at, at + size)); } catch { return ''; } };
         const formula = [text(o + 7, first), text(o + 9 + first, second)].filter(Boolean).join(' / ');
         out.push({ node: i + 1, known: true, x: node.x, y: node.y, reference: node.ownerIndex, mode: 0, distance: 0, count: 1, owner: view.getUint32(end - 37, true), end: bytes[end - 33], role: view.getUint32(end - 32, true), formula,
@@ -161,7 +169,7 @@ function extensionWidths(project, groupId, contourIds, ring) {
   });
 }
 export function convertPrjToEditable(input, parsed, { makeId = () => crypto.randomUUID() } = {}) {
-  if (parsed?.metadata?.format !== EDITABLE_SOURCE_FORMAT) throw new Error('目前只能把 ET 2.0（08 版）布局的 PRJ 转成可编辑工程；其他布局的文件请先在 ET 里另存为 08 版。');
+  if (!editableLayout(parsed?.metadata)) throw new Error('目前只能把 ET 2.0（08 版）布局的 PRJ 转成可编辑工程' + (parsed?.metadata?.layout ? '；这个文件是 ' + layoutName(parsed.metadata) : '') + '；其他布局的文件请先在 ET 里另存为 08 版。');
   // a file with a layer per size is read as its base size, the same bytes the reader used
   const bytes = baseSizeLayer(input instanceof Uint8Array ? input : new Uint8Array(input)).bytes, env = { makeId };
   const curves = parsed.entities.filter(e => e.type !== 'text' && [2, 4].includes(e.source?.recordKind)).sort((a, b) => a.source.offset - b.source.offset);
@@ -247,7 +255,10 @@ export function convertPrjToEditable(input, parsed, { makeId = () => crypto.rand
       piece.attributes = { symmetric: group.source?.symmetry === '对称' || group.source?.symmetry === 'sym' || group.source?.symmetricCount > 0, material: String(group.source?.material || ''), size: String(group.source?.size || ''), count: Number.isInteger(group.source?.count) && group.source.count >= 1 ? group.source.count : 1,
         // the fabric is the number; a file may carry it without a name
         materialCode: Number.isInteger(group.source?.materialCode) ? group.source.materialCode : 100,
-        et: { angle: Number.isFinite(group.source?.angle) ? group.source.angle : 0, label: String(group.source?.labelFormat || 'MD') } };
+        et: { angle: Number.isFinite(group.source?.angle) ? group.source.angle : 0, label: String(group.source?.labelFormat || 'MD') },
+        // v76: ET's note of the shrinkage it applied to the piece (缩水操作), kept and written back as it was
+        ...(group.source?.shrinkNote ? { shrinkNote: String(group.source.shrinkNote) } : {}),
+        ...(Array.isArray(group.source?.shrinkFactors) && group.source.shrinkFactors.every(Number.isFinite) ? { shrinkFactors: group.source.shrinkFactors.slice(0, 2) } : {}) };
       piece.attributes.material = materialName(piece.attributes.material, piece.attributes.materialCode);
       if (grainSource?.arrowStart) { const line = project.entities.find(e => e.id === piece.entityIds.at(-1)); if (line?.layer === 'grain') line.arrowStart = true; }
       for (const id of group.entityIds) owned.add(id);

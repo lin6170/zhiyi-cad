@@ -255,9 +255,12 @@ export function describeGrading(project) {
   const plan = tablePlanOf(project); if (!plan) return null;
   const sizes = sizesInOrder(plan);
   const named = describeSeries(plan.sizeTable);   // v71: ET's five series and the one in use; a row's 纸样尺寸 when it is not 0
+  // v77: the plan of a trouser drafted from measurements has its rules from the trouser's formulas (hundreds); the scene names the draft
+  const fromDraft = (project.metadata?.parametricDrafts || []).find(draft => draft.gradingPlanId === plan.id) || null;
   return { planId: plan.id, name: plan.name, baseSize: plan.baseSize, sizes: sizes.map(size => size.label), seriesInUse: named.inUse, series: named.series,
     measures: plan.sizeTable.rows.slice(0, 60).map(row => ({ name: row.name, valuesCm: sizes.map(size => round(row.values[size.slot])), ...(row.values[PATTERN_SLOT] ? { patternCm: round(row.values[PATTERN_SLOT]) } : {}) })),
-    rules: plan.anchors.filter(anchor => !anchor.plain).slice(0, 200).map(anchor => { const at = placeOfAnchor(project, anchor); return { entityId: anchor.entityId, ...(at ? { at: { x: round(at.x), y: round(at.y) } } : {}), x: anchor.x, y: anchor.y, ...(angleOf(anchor) ? { angleDeg: angleOf(anchor) } : {}), ...(anchor.between !== undefined ? { onLine: true } : {}), ...(anchor.unit === 'in' ? { inches: true } : {}) }; }),
+    ...(fromDraft ? { fromDraft: { draftId: fromDraft.id, notchRules: (plan.notchRules || []).length, howToChange: '这套放码是按尺寸生成的整套裤子的，每个点和刀口的规则由纸样公式推出（不逐条列出）；改号型、基码、档差或去掉放码用 pattern.updateDraft 的 grading、removeGrading，用 grade.* 改算手工修改' } } : {}),
+    rules: fromDraft ? [] : plan.anchors.filter(anchor => !anchor.plain).slice(0, 200).map(anchor => { const at = placeOfAnchor(project, anchor); return { entityId: anchor.entityId, ...(at ? { at: { x: round(at.x), y: round(at.y) } } : {}), x: anchor.x, y: anchor.y, ...(angleOf(anchor) ? { angleDeg: angleOf(anchor) } : {}), ...(anchor.between !== undefined ? { onLine: true } : {}), ...(anchor.unit === 'in' ? { inches: true } : {}) }; }),
     ruleCount: plan.anchors.filter(anchor => !anchor.plain).length, ...(plan.lostRules ? { rulesLostToEdits: plan.lostRules } : {}),
     ...(plan.alignment ? { alignment: { mode: plan.alignment.mode, entityId: plan.alignment.entityId, at: { x: round(plan.alignment.at.x), y: round(plan.alignment.at.y) }, ...(plan.alignment.mode === 'point' && plan.alignment.axis !== 'both' ? { axis: plan.alignment.axis } : {}) } } : {}),
     ...lockedOf(plan) };

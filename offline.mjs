@@ -5,7 +5,7 @@
 //  - when a new version has been fetched in the background, offers to reload into it (the work in hand is saved first by the user;
 //    the page asks before leaving unsaved work, as it always does);
 //  - shows 离线 in the header while the computer has no network (the assistant's model service, which is elsewhere, then cannot answer).
-export const OFFLINE_VERSION = 74;
+export const OFFLINE_VERSION = 77;
 export const OFFLINE_TEXT = Object.freeze({
   unsupported: '这个浏览器不能离线使用，联网时照常可用。',
   preparing: '正在准备离线使用…',

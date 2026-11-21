@@ -1,6 +1,7 @@
 import {bezierSpans,curveLength} from './curves.mjs';
 import {assertNativeSimpleBoundary,exactLineContact} from './native-contact.mjs';
 const clone=v=>JSON.parse(JSON.stringify(v)),distance=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+export const MICRO_GAP_MM=1e-4;
 
 // Receives the caller's chosen entity order/directions, never display samples.
 export function inspectNativeChain(oriented,tolerance){
@@ -20,8 +21,13 @@ export function inspectNativeChain(oriented,tolerance){
   }
   if(!lengthConverged)issues.push({kind:'length-unresolved',severity:'review',evidence:'inconclusive',message:'原生弧长积分未收敛，长度需核对',entityIds:[...new Set(references.map(r=>r.entityId))]});
   const connections=[];
+  // v77: ends a ten-thousandth of a millimetre apart or less are one point (single and double precision: an ET curve's end beside a
+  // line's end); a temporary line that short could neither be proved nor refuted (the parts are copies, the drawing stays as it is). Every
+  // leading control point on the old end moves with it: an ET curve doubles its end points, and moving one would leave a hook
+  let microGaps=0;
+  parts.forEach((part,i)=>{const next=(i+1)%parts.length,start=part.points.at(-1),end=parts[next].points[0],gap=distance(start,end);if(gap>0&&gap<=MICRO_GAP_MM){const points=parts[next].points;for(let k=0;k<points.length&&points[k].x===end.x&&points[k].y===end.y;k++)points[k]={...start};microGaps++;}});
   parts.forEach((part,i)=>{const next=(i+1)%parts.length,start=part.points.at(-1),end=parts[next].points[0],gap=distance(start,end);if(gap>0)connections.push({start:{...start},end:{...end},distance:gap,from:clone(references[i]),to:clone(references[next])});});
-  const base={method:'native-bezier-certificates',coordinateSpace:'project',partCount:parts.length,connections,exactlyClosed:!connections.length,usesVirtualConnections:false,nativeLength:lengthConverged?nativeLength:null,lengthConverged,issues};
+  const base={method:'native-bezier-certificates',coordinateSpace:'project',partCount:parts.length,connections,exactlyClosed:!connections.length,...(microGaps?{microGapsClosed:microGaps}:{}),usesVirtualConnections:false,nativeLength:lengthConverged?nativeLength:null,lengthConverged,issues};
   if(oriented.length>1&&oriented.some(x=>x.entity.closed))return {...base,status:'not-checked',reason:'invalid-definition',message:'轮廓定义含独立闭合图元，未作原生闭合检查'};
   if(connections.some(g=>g.distance>tolerance))return {...base,status:'not-checked',reason:'gap',message:'原生分段间隙超出容差，未作闭合证明'};
   base.usesVirtualConnections=connections.length>0;

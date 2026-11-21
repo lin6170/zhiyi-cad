@@ -42,7 +42,7 @@ import { createPrjSavePanel } from './prj-save-ui.mjs';
 import { createPrjLineExportSession } from './prj-line-export.mjs';
 import { createPrjLinePanel } from './prj-line-ui.mjs';
 import { createPrjNewPanel } from './prj-new-ui.mjs';
-import { createCadCommands } from './cad-commands.mjs?v=74';
+import { createCadCommands } from './cad-commands.mjs?v=77';
 import { createOffline } from './offline.mjs';
 import { createViewModes } from './view-keys.mjs';
 import { createHelp } from './help.mjs';
@@ -50,6 +50,7 @@ import {createPantsDraftPanel} from './pants-draft-ui.mjs';
 import { createAssistantPanel } from './assistant-panel.mjs';
 import { createConstructPanel } from './construct-ui.mjs';import { createSmartPen } from './smart-pen-ui.mjs';
 import { createPrjEditablePanel } from './prj-editable-ui.mjs';
+import { layoutName } from './prj-editable.mjs';
 import { fitClampedSpline } from './fit-spline.mjs';
 import { createPantsPanel } from './pants-ui.mjs';
 import { createViewMenu, lengthLabels, seamWidthLabels, pieceFills } from './view-options.mjs';
@@ -440,7 +441,7 @@ function refresh() {
   const warnings = project.warnings || [];
   $('import-status').classList.toggle('warning', warnings.length > 0);
   $('import-status').textContent = project.metadata?.format?.startsWith('ET')
-    ? 'ET PRJ 实验导入 · ' + project.entities.filter(entity => entity.type !== 'text').length + ' 条线 / ' + project.entities.filter(entity => entity.type === 'text').length + ' 项文字 · ' + unit()
+    ? 'ET PRJ 实验导入 · ' + (project.units === 'unknown' ? layoutName(project.metadata) + ' · ' : '') + project.entities.filter(entity => entity.type !== 'text').length + ' 条线 / ' + project.entities.filter(entity => entity.type === 'text').length + ' 项文字 · ' + unit()
     : project.entities.length + ' 个图元 · ' + unit();
   if(project.metadata?.format==='DXF'){const report=project.metadata.dxfImport;$('import-status').textContent='DXF · '+project.entities.length+' 个图元 · '+unit()+(report?.skippedCount?' · 部分导入，跳过 '+report.skippedCount+' 项':'');}
   const invalidSeams=(project.seamAllowances||[]).filter(recipe=>recipe.status!=='current');
@@ -1327,7 +1328,7 @@ cadCommands=createCadCommands({getProject:()=>project,getRevision:()=>projectRev
   commit:(next,ids)=>{checkpoint();project=next;selected=new Set(ids);finishEdit();},
   undo,redo,history:()=>({canUndo:Boolean(undoStack.length),canRedo:Boolean(redoStack.length)}),getPantsSession:()=>pantsSession});
 Object.defineProperty(window,'zhiyiCAD',{value:cadCommands,writable:false,configurable:false});
-draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRevision,download,reveal:()=>{refresh();fit();},savePrj:()=>{refresh();fit();prjNewPanel.open();}});
+draftPanel=createPantsDraftPanel({commands:cadCommands,getRevision:()=>projectRevision,download,reveal:()=>{refresh();fit();},savePrj:()=>{refresh();fit();prjNewPanel.open();},showGrading:()=>{refresh();fit();gradingPanel.begin(project.metadata?.parametricDrafts?.at(-1)?.gradingPlanId);}});
 const draftEntry=document.createElement('button');draftEntry.id='draft-open';draftEntry.textContent='尺寸自动制版';draftEntry.setAttribute('aria-haspopup','dialog');draftEntry.onclick=()=>{if(!importPending&&!gesture&&!draft.length){setTool('select');draftPanel.open();}else notify('请先完成或取消当前编辑。');};document.querySelector('.file-actions').append(draftEntry);
 const draftWelcome=document.createElement('button');draftWelcome.id='welcome-draft';draftWelcome.textContent='输入尺寸，生成新纸样';draftWelcome.onclick=()=>draftEntry.click();$('welcome-more').append(draftWelcome);   // v74: opening an ET file leads the welcome
 assistantPanel=createAssistantPanel({commands:cadCommands,host:$('workspace'),getSelection:()=>[...selected],

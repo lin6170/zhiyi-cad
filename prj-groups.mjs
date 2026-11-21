@@ -18,8 +18,8 @@ export function parsePrjGroups(input, parsed) {
   for (let pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
     const piece = pieces[pieceIndex];
     const recordEnd = pieceIndex + 1 < pieces.length ? pieces[pieceIndex + 1].offset : parsed.metadata.textSectionOffset - 4;
-    if (recordEnd > bytes.length || piece.vectorOffset + 62 > recordEnd) throw new Error('PRJ 裁片引用范围越界。');
-    let cursor = piece.vectorOffset + 58;
+    if (recordEnd > bytes.length || piece.vectorOffset + 62 + (piece.noteLength || 0) > recordEnd) throw new Error('PRJ 裁片引用范围越界。');
+    let cursor = piece.vectorOffset + 58 + (piece.noteLength || 0);
     function word() {
       if (cursor + 4 > recordEnd) throw new Error(`裁片 ${piece.name} 的引用数据被截断。`);
       const value = u32(cursor);
@@ -74,7 +74,9 @@ export function parsePrjGroups(input, parsed) {
     const auxiliaryIndices = references(100000, '辅助对象');
     const ownedTexts = references(texts.length, '所属文字');
     const unattachedIndices = references(100000, '独立对象');
-    if (cursor + 112 !== recordEnd) throw new Error(`裁片 ${piece.name} 的记录边界不符合已验证结构。`);
+    // v76: a piece ET has shrunk (header byte 0x24) ends with two floats after the transform: its stretch along and across the grain
+    const shrunk = (piece.flag & 0x04) !== 0, shrinkFactors = shrunk && cursor + 120 <= bytes.length ? [new DataView(bytes.buffer, bytes.byteOffset + cursor + 112, 8).getFloat32(0, true), new DataView(bytes.buffer, bytes.byteOffset + cursor + 112, 8).getFloat32(4, true)] : null;
+    if (cursor + 112 + (shrunk ? 8 : 0) !== recordEnd) throw new Error(`裁片 ${piece.name} 的记录边界不符合已验证结构。`);
     // Both supplied samples have the same 112-byte identity transform trailer.
     // Reject other transforms until their geometric semantics are implemented.
     for (let block = 0; block < 2; block++) {
@@ -109,7 +111,7 @@ export function parsePrjGroups(input, parsed) {
       source: { format: 'ET PRJ', offset: piece.offset, sourceId: piece.sourceId,
         pieceIndex: pieceIndex + 1, recordEnd, transformOffset: cursor,
         curveIds, textIds, grainId, contourChains: chains,
-        material: piece.material, materialCode: piece.materialCode, size: piece.size, symmetry: piece.symmetry, count: piece.count, symmetricCount: piece.symmetricCount, angle: piece.angle, labelFormat: piece.labelFormat, flag: piece.flag,
+        material: piece.material, materialCode: piece.materialCode, size: piece.size, symmetry: piece.symmetry, count: piece.count, symmetricCount: piece.symmetricCount, angle: piece.angle, labelFormat: piece.labelFormat, flag: piece.flag, ...(piece.shrinkNote ? { shrinkNote: piece.shrinkNote } : {}), ...(shrinkFactors ? { shrinkFactors } : {}),
         ownedCurves, ownedNodes, auxiliaryIndices, ownedTexts, unattachedIndices,
         interpretation: 'serialized-piece-ownership-index-arrays',
       },

@@ -11,10 +11,11 @@
  * Measured in ET's own files: on straight edges the straight parts, the ends and the vent's lines are exact. The curves of
  * 曲线断差2 and 3 are fitted to ET's (ET stores them as many sampled points of a curve it does not keep): 3 within 0.05 mm, 2 within
  * 0.5 mm over 17 cases; the vent's top curve is ET's own spline through three points, its middle point fitted. On a curved vent
- * edge the facing is laid along the vent's chord (ET's own facing there bends in a way not worked out; up to 7 mm off).
+ * edge ET mirrors the net side about a straight line (v75, curvedVent below; up to v74 the page laid the facing along the vent's
+ * chord, up to 10 mm off): within 0.92 mm of ET's 32 probe vents.
  */
 import { fitClampedSpline } from './fit-spline.mjs';
-import { sampleCurve } from './curves.mjs';
+import { sampleCurve, evaluateBSpline } from './curves.mjs';
 
 const add = (a, b, f = 1) => ({ x: a.x + b.x * f, y: a.y + b.y * f }), sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
 const dot = (a, b) => a.x * b.x + a.y * b.y, cross = (a, b) => a.x * b.y - a.y * b.x, len = a => Math.hypot(a.x, a.y), neg = a => ({ x: -a.x, y: -a.y });
@@ -101,7 +102,7 @@ export function jointShape(kind, vertex, wide, narrow, params) {
  *   fold; 半止口: at s = A + B a line out to the facing edge w = 2ww + D, which runs down to the hem's seam line (carried out to it), a
  *   solid line stays at w = 2ww when D > 0; 全止口: a second fold at w = 2ww, K1 moved out by 2ww, the outer edge w = 3ww from s = C
  *   down (D not used). Both: the vent's seam line becomes a dashed fold from s = C down; a line from the fold at s = 0 to the net edge at
- *   s = B. Straight vents as ET; a curved vent edge is laid along its chord for the facing (the fold follows the curve).
+ *   s = B. Straight vents as ET; a curved vent edge (one with fit points that bend: `vent.fit`) is mirrored as ET does it (curvedVent).
  *   vent:  { tangent (unit, at the joint, pointing into the narrower side), normal, width, points (its edge from the joint to the hem corner) }
  *   narrow: as for jointShape;  hem: { seamPoint, tangent } a point of the hem's seam line and its direction
  * Returns { foldPoint, narrowStart, k1, outline (from the fold point outwards to the hem's seam line), lines: [{ points, dashed }],
@@ -118,16 +119,19 @@ export function ventShape(kind, vertex, vent, narrow, hem, { a = 0, b = 0, c = 0
   if (!(ww > wn)) throw new Error('开叉的边要比相接的边缝份宽。');
   if (!(a + b > c)) throw new Error('开叉的 A + B 要大于 C。');
   const outAt = (L) => { const { point, tangent } = along(narrow.points, L), n = narrow.outwardSign > 0 ? { x: tangent.y, y: -tangent.x } : { x: -tangent.y, y: tangent.x }; return { net: point, seam: add(point, n, wn), tangent }; };
-  // the facing is laid along the vent's chord from its hem corner to the joint (s towards the narrower side), n outwards
+  // a straight vent's frame: s from its hem corner to the joint (towards the narrower side), n outwards
   const hemCorner = vent.points.at(-1), sAxis = vent.points.length > 2 ? unit(sub(vertex, hemCorner)) : vent.tangent, nAxis = vent.normal;
   const P = (s, w) => add(add(vertex, sAxis, s), nAxis, w), top = a + b;
-  const N = outAt(top).seam, F = add(add(vertex, vent.normal, ww), vent.tangent, c);
+  // v75: on a curved vent ET sets the fold point in a frame at the joint taken from a chord of the vent's spline (here: over the first
+  // half of its first piece; within 0.34 mm of ET's point, the spline's own tangent misses by up to 1.3 mm)
+  const fit = curvedFit(vent, vertex), frame = fit ? jointFrame(fit, vent.normal) : { tangent: vent.tangent, normal: vent.normal };
+  const N = outAt(top).seam, F = add(add(vertex, frame.normal, ww), frame.tangent, c);
   const mirror = p => add(p, nAxis, -2 * dot(sub(p, F), nAxis));
-  const k1Fit = ventMiddle(N, F, sAxis, nAxis, kind === 'ventFull' && nAxis.x > 1e-9), k1 = splinePoints(k1Fit), k2Out = splinePoints(k1Fit.map(mirror)).reverse();   // K2 from the fold point outwards
+  const k1Fit = fit ? ventMiddle(N, F, frame.tangent, frame.normal, kind === 'ventFull' && frame.normal.x > 1e-9) : ventMiddle(N, F, sAxis, nAxis, kind === 'ventFull' && nAxis.x > 1e-9), k1 = splinePoints(k1Fit), k2Out = splinePoints(k1Fit.map(mirror)).reverse();   // K2 from the fold point outwards
   const hemMeet = w => meet(P(0, w), sAxis, hem.seamPoint, hem.tangent);
   // the fold is the vent's own seam line: from F straight back to the joint's offset, then along the vent edge at the vent's width
   // (a curved vent's too, as ET draws it), to where it meets the hem's seam line
-  const across = d => { const n = { x: -d.y, y: d.x }; return dot(n, vent.normal) >= 0 ? n : neg(n); }, fold = [F, add(vertex, vent.normal, ww)];
+  const across = d => { const n = { x: -d.y, y: d.x }; return dot(n, vent.normal) >= 0 ? n : neg(n); }, fold = [F, add(vertex, frame.normal, ww)];
   for (let i = 1; i < vent.points.length; i++) {
     const a = vent.points[i - 1], b = vent.points[i], d = sub(b, a); if (!(len(d) > 1e-9)) continue;
     const prev = i > 1 ? unit(sub(a, vent.points[i - 2])) : unit(d), here = unit(d), mean = unit(add(prev, here)), n = across(mean), stretch = 1 / Math.max(.2, dot(across(here), n));
@@ -141,6 +145,7 @@ export function ventShape(kind, vertex, vent, narrow, hem, { a = 0, b = 0, c = 0
   }
   if (!foldBottom) { foldBottom = hemMeet(ww); fold.push(foldBottom); }
   const foldLine = fold.filter((p, i, all) => !i || len(sub(p, all[i - 1])) > 1e-9), lines = [];
+  if (fit) return curvedVent(kind, vertex, vent, narrow, hem, { b, d, ww, top, N, F, k1Fit, k1, outAt, fit, foldLine, foldBottom, frame });
   let outward, outerBottom;
   if (kind === 'ventHalf') {
     const edgeW = 2 * ww + d; outerBottom = hemMeet(edgeW);
@@ -187,3 +192,86 @@ export function ventBulge(theta) {
   return table.at(-1)[1];
 }
 function splinePoints(fit) { const s = fitClampedSpline(fit); return sampleCurve({ ...s.curve, samplingTolerance: .002 }).points; }
+/** The fit points of a curved vent edge, from the joint to the hem corner, or null for a straight one. */
+function curvedFit(vent, vertex) {
+  const fit = vent.fit; if (!fit || fit.length < 3) return null;
+  const run = len(sub(fit[0], vertex)) <= len(sub(fit.at(-1), vertex)) ? fit : [...fit].reverse(), chord = sub(run.at(-1), run[0]), c = len(chord);
+  if (!(c > 1e-9)) return null;
+  return run.slice(1, -1).some(p => Math.abs(cross(chord, sub(p, run[0]))) / c > 1e-3) ? run : null;
+}
+/** The frame at the joint of a curved vent: along the chord of its spline over the first half of the first piece, into the narrower side. */
+function jointFrame(fit, normal) {
+  const spline = fitClampedSpline(fit).curve, U = spline.knots, breaks = [...new Set(U)], Q = evaluateBSpline(spline.controlPoints, U, breaks[0] + (breaks[1] - breaks[0]) / 2, 3);
+  const tangent = unit(sub(fit[0], Q)), n = { x: tangent.y, y: -tangent.x };
+  return { tangent, normal: dot(n, normal) >= 0 ? n : neg(n) };
+}
+const reflectAbout = (o, u) => p => { const v = sub(p, o); return add(o, add(neg(v), u, 2 * dot(v, u))); };   // about the line through o along u
+const turnAbout = u => v => add(neg(v), u, 2 * dot(v, u));
+/** A polyline moved out by `dist` on the side `side` points to, its ends kept on the lines (p, d) and (q, e). */
+function offsetBetween(points, dist, side, p, d, q, e) {
+  const normal = i => { const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)], t = unit(sub(b, a)), n = { x: -t.y, y: t.x }; return dot(n, side) >= 0 ? n : neg(n); };
+  const moved = points.map((pt, i) => add(pt, normal(i), dist));
+  const top = meet(moved[0], sub(moved[1], moved[0]), p, d) || moved[0], bottom = meet(moved.at(-1), sub(moved.at(-1), moved.at(-2)), q, e) || moved.at(-1);
+  return [top, ...moved.slice(1, -1), bottom];
+}
+/** Up to `count` points of a polyline, evenly by length, both ends kept: the fit points ET gets for a curve made of many points. */
+function thinned(points, count = 12) {
+  const at = [0]; for (let i = 1; i < points.length; i++) at.push(at[i - 1] + len(sub(points[i], points[i - 1])));
+  if (points.length <= count) return points;
+  const out = [points[0]]; let j = 1;
+  for (let k = 1; k < count - 1; k++) { const s = at.at(-1) * k / (count - 1); while (j < points.length - 1 && at[j] < s) j++; out.push(points[j]); }
+  out.push(points.at(-1)); return out.filter((pt, i, all) => !i || len(sub(pt, all[i - 1])) > 1e-9);
+}
+/**
+ * v75: ET's 开叉半止口 and 开叉全止口 on a curved vent edge, as ET's own saves of eight made-up pieces with curved vents show (four
+ * runs): ET mirrors the net side about one straight line instead of laying the facing along the vent's chord.
+ * The line runs from the fold point F (s = C) to the hem corner H moved out by ww; ET takes the direction there from a chord of its
+ * own (here: square to the chord over the last third of the spline's last piece, within 0.23 mm of ET's point). K2 is the image of K1,
+ * the line at s = A + B the image of the narrower edge's normal there; the 2ww line is ET's spline through the images of the vent's
+ * fit points (the hem corner's image left out when it comes within ww / 3 of the hem's seam line), from the line at s = A + B to
+ * the hem's seam line; 半止口: the facing edge is the 2ww line moved out by D; 全止口: the 2ww line is the second fold, and a second
+ * line through its first point and the hem corner's image mirrors K2 into K3 and the fold into the outer edge.
+ */
+function curvedVent(kind, vertex, vent, narrow, hem, { b, d, ww, top, N, F, k1Fit, k1, outAt, fit, foldLine, foldBottom, frame }) {
+  const H = fit.at(-1), spline = fitClampedSpline(fit).curve, U = spline.knots, breaks = [...new Set(U)], tEnd = breaks.at(-1), span = tEnd - breaks.at(-2);
+  const Q = evaluateBSpline(spline.controlPoints, U, tEnd - span / 3, 3), chord = unit(sub(H, Q));
+  let nH = { x: -chord.y, y: chord.x }; if (dot(nH, sub(F, H)) < 0) nH = neg(nH);
+  const X = add(H, nH, ww), axis = unit(sub(X, F)), m1 = reflectAbout(F, axis), t1 = turnAbout(axis);
+  // the fold near the hem: through that point at the hem corner, then on along the same chord to the hem's seam line (as ET's fold runs)
+  const Xend = meet(X, chord, hem.seamPoint, hem.tangent), keep = foldLine.filter(p => dot(sub(p, X), chord) < -1e-6);
+  if (Xend && dot(sub(Xend, X), chord) > 0 && keep.length >= 2) { foldLine = [...keep, X, Xend]; foldBottom = Xend; }
+  const k2Fit = k1Fit.map(m1), k2Out = splinePoints(k2Fit).reverse(), N1 = m1(N);
+  const at = outAt(top), sDir = t1(unit(sub(at.net, at.seam)));   // the line at s = A + B: the image of the narrower edge's normal, outwards from N'
+  const ctrl = spline.controlPoints, tH = unit(sub(H, ctrl[ctrl.length - 3]));   // down the vent at the hem corner
+  const p1 = meet(N1, sDir, m1(fit[0]), t1(frame.tangent)) || m1(fit[0]), pEnd = meet(m1(H), t1(tH), hem.seamPoint, hem.tangent) || m1(H);
+  const images = fit.map(m1); if (len(sub(images.at(-1), pEnd)) < ww / 3) images.pop();
+  const twoFit = [p1, ...images, pEnd].filter((p, i, all) => !i || len(sub(p, all[i - 1])) > 1e-9), two = splinePoints(twoFit);
+  const awayFromFold = { x: -axis.y, y: axis.x }, away = dot(awayFromFold, sub(p1, F)) >= 0 ? awayFromFold : neg(awayFromFold);
+  const lines = [], etParts = [{ kind: 'spline', points: k1Fit }, { kind: 'spline', points: k2Fit }];
+  let outward, outerBottom;
+  if (kind === 'ventHalf') {
+    const facing = d > 0 ? offsetBetween(two, d, away, N1, sDir, hem.seamPoint, hem.tangent) : two;
+    outward = [...k2Out, ...facing]; outerBottom = facing.at(-1);
+    if (d > 0) lines.push({ points: two, dashed: false });
+    etParts.push({ kind: 'line', points: [N1, facing[0]] }, { kind: 'line', points: [add(vertex, frame.normal, ww), outAt(b).net], inside: true });
+    if (d > 0) etParts.push({ kind: 'spline', points: twoFit, down: true, inside: true });
+    etParts.push({ kind: 'spline', points: d > 0 ? thinned(facing) : twoFit, down: true });
+  } else {
+    const m2 = reflectAbout(p1, unit(sub(m1(H), p1))), k3Fit = k2Fit.map(m2), k3 = splinePoints(k3Fit);
+    // the outer edge: the image of the fold, cut at the hem's seam line (or carried on to it)
+    const raw = foldLine.map(m2); let outer = null;
+    for (let i = 1; i < raw.length && !outer; i++) { const a = raw[i - 1], e = sub(raw[i], a), x = meet(a, e, hem.seamPoint, hem.tangent); if (!x) continue; const t = dot(sub(x, a), e) / dot(e, e); if (t >= -1e-9 && (t <= 1 + 1e-9 || i === raw.length - 1)) outer = [...raw.slice(0, i), x]; }
+    if (!outer) outer = raw;
+    outward = [...k2Out, p1, ...k3, ...outer]; outerBottom = outer.at(-1);
+    lines.push({ points: two, dashed: true });
+    etParts.push({ kind: 'spline', points: k3Fit }, { kind: 'line', points: [N1, p1] }, { kind: 'line', points: [add(vertex, frame.normal, ww), outAt(b).net], inside: true },
+      { kind: 'line', points: [m2(N1), p1] }, { kind: 'spline', points: twoFit, dashed: true, down: true, inside: true }, { kind: 'spline', points: thinned(outer), down: true });
+  }
+  lines.push({ points: [add(vertex, frame.normal, ww), outAt(b).net], dashed: false });
+  const net = netUpTo(narrow.points, top);
+  const region = [...net.slice().reverse(), ...vent.points.slice(1), foldBottom, ...outward.slice().reverse(), ...k1.slice().reverse()].filter((p, i, all) => !i || len(sub(p, all[i - 1])) > 1e-9);
+  const zone = [];
+  for (let i = 0; i <= 24; i++) zone.push(along(narrow.points, top * i / 24).point);
+  for (let i = 24; i >= 0; i--) zone.push(outAt(top * i / 24).seam);
+  return { foldPoint: F, narrowStart: N, k1, k1Fit, outward, foldLine, lines, hemStart: outerBottom, region, zone, etParts };
+}

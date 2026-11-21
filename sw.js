@@ -3,7 +3,7 @@
 // also with no network at all. A new version is fetched in the background and waits until the page is reloaded (the page offers
 // that). Nothing else is stored and nothing is sent anywhere: files are only ever read from the site this page came from.
 'use strict';
-const VERSION = 74;
+const VERSION = 77;
 const CACHE = 'zhiyi-cad-v' + VERSION;
 const SHELL = 'index.html';
 // Every file of the site except this one (a test checks the list against the folder).
@@ -24,21 +24,21 @@ const FILES = [
   "line-edit.mjs", "manifest.webmanifest", "marker-pack.mjs", "marker-polygons.mjs", "marker-schema.mjs", "marker-ui.mjs",
   "marker-worker.mjs", "marker.mjs", "measure-sizes.mjs", "measure.mjs", "mirror-links.mjs", "model-service.html", "native-contact.mjs",
   "native-location.mjs", "notches.mjs", "offline.mjs", "pants-command.mjs", "pants-draft-ui.mjs", "pants-draft.css", "pants-draft.mjs",
-  "pants-prj-export.mjs", "pants-rule-ui.mjs", "pants-rules.mjs", "pants-template.mjs", "pants-ui.mjs", "pants.css", "path-metrics.mjs",
-  "piece-attributes.mjs", "piece-extract.mjs", "piece-info.mjs", "piece-join.mjs", "piece-list-ui.mjs", "piece-merge-ui.mjs",
-  "piece-merge.css", "piece-merge.mjs", "piece-split-ui.mjs", "piece-split.css", "piece-split.mjs", "plot-schema.mjs", "plot-ui.mjs",
-  "plot.mjs", "polygon.mjs", "polynomial-roots.mjs", "position-ui.mjs", "position.css", "position.mjs", "precision.mjs",
-  "prj-annotations.mjs", "prj-curves.mjs", "prj-editable-ui.mjs", "prj-editable.css", "prj-editable.mjs", "prj-endpoint-export.mjs",
-  "prj-endpoint-ui.mjs", "prj-endpoint.css", "prj-grading.mjs", "prj-groups.mjs", "prj-import.mjs", "prj-legacy.mjs",
-  "prj-line-export.mjs", "prj-line-ui.mjs", "prj-line.css", "prj-marks.mjs", "prj-new-export.mjs", "prj-new-ui.mjs", "prj-new.css",
-  "prj-parser.mjs", "prj-references.mjs", "prj-save-ui.mjs", "prj-save.css", "prj-sizes.mjs", "prj-storage.mjs", "prj-text-export.mjs",
-  "prj-v5-curves.mjs", "prj-v5-layout.mjs", "prj-v5-line-insert.mjs", "prj-v5-tail.mjs", "prj-v5.mjs", "prj-writeback-ui.mjs",
-  "prj-writeback.css", "prj-writeback.mjs", "recovery-ui.mjs", "recovery.css", "recovery.mjs", "rule-library.mjs", "seam-check-ui.mjs",
-  "seam-checks.mjs", "seam-corners.mjs", "seam-joints.mjs", "seam-section-ui.mjs", "seam-sections.mjs", "seam-widths.mjs", "seams.mjs",
-  "selection.mjs", "size-formula.mjs", "size-input.mjs", "size-series.mjs", "smart-pen-ui.mjs", "smart-pen.css", "smart-pen.mjs",
-  "snapping.mjs", "spline.mjs", "spread-ui.mjs", "spread.css", "spread.mjs", "style.css", "table-text.mjs", "table-ui.mjs", "table.css",
-  "topology.mjs", "transform-links.mjs", "unfold-ui.mjs", "unfold.css", "unfold.mjs", "variable-offset.mjs", "vendor/NOTICE.txt",
-  "vendor/clipper.mjs", "view-keys.mjs", "view-options.mjs"
+  "pants-grading.mjs", "pants-prj-export.mjs", "pants-rule-ui.mjs", "pants-rules.mjs", "pants-set.mjs", "pants-template.mjs",
+  "pants-ui.mjs", "pants.css", "path-metrics.mjs", "piece-attributes.mjs", "piece-extract.mjs", "piece-info.mjs", "piece-join.mjs",
+  "piece-list-ui.mjs", "piece-merge-ui.mjs", "piece-merge.css", "piece-merge.mjs", "piece-split-ui.mjs", "piece-split.css",
+  "piece-split.mjs", "plot-schema.mjs", "plot-ui.mjs", "plot.mjs", "polygon.mjs", "polynomial-roots.mjs", "position-ui.mjs",
+  "position.css", "position.mjs", "precision.mjs", "prj-annotations.mjs", "prj-curves.mjs", "prj-editable-ui.mjs", "prj-editable.css",
+  "prj-editable.mjs", "prj-endpoint-export.mjs", "prj-endpoint-ui.mjs", "prj-endpoint.css", "prj-grading.mjs", "prj-groups.mjs",
+  "prj-import.mjs", "prj-legacy.mjs", "prj-line-export.mjs", "prj-line-ui.mjs", "prj-line.css", "prj-marks.mjs", "prj-new-export.mjs",
+  "prj-new-ui.mjs", "prj-new.css", "prj-parser.mjs", "prj-references.mjs", "prj-save-ui.mjs", "prj-save.css", "prj-sizes.mjs",
+  "prj-storage.mjs", "prj-text-export.mjs", "prj-v5-curves.mjs", "prj-v5-layout.mjs", "prj-v5-line-insert.mjs", "prj-v5-tail.mjs",
+  "prj-v5.mjs", "prj-writeback-ui.mjs", "prj-writeback.css", "prj-writeback.mjs", "recovery-ui.mjs", "recovery.css", "recovery.mjs",
+  "rule-library.mjs", "seam-check-ui.mjs", "seam-checks.mjs", "seam-corners.mjs", "seam-joints.mjs", "seam-section-ui.mjs",
+  "seam-sections.mjs", "seam-widths.mjs", "seams.mjs", "selection.mjs", "shrink.mjs", "size-formula.mjs", "size-input.mjs",
+  "size-series.mjs", "smart-pen-ui.mjs", "smart-pen.css", "smart-pen.mjs", "snapping.mjs", "spline.mjs", "spread-ui.mjs", "spread.css",
+  "spread.mjs", "style.css", "table-text.mjs", "table-ui.mjs", "table.css", "topology.mjs", "transform-links.mjs", "unfold-ui.mjs",
+  "unfold.css", "unfold.mjs", "variable-offset.mjs", "vendor/NOTICE.txt", "vendor/clipper.mjs", "view-keys.mjs", "view-options.mjs"
   // FILES-END
 ];
 const KNOWN = new Set(FILES);

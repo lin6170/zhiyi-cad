@@ -51,6 +51,14 @@ export const PHRASES = Object.freeze([
     { say: '脚口改成40厘米', when: 'drafted', does: 'pattern.updateDraft' },
     { say: '缝份改成1.2厘米', when: 'drafted', does: 'pattern.updateDraft' },
   ] },
+  // v76: a new trouser is a whole set (waistband, fly, pockets, loops); whole: the page drafted one
+  { group: '整套裤子：部件、缩水、交付检查', items: [
+    { say: '不要后袋', when: 'whole', does: 'pattern.updateDraft' },
+    { say: '改成双嵌线', when: 'whole', does: 'pattern.updateDraft' },
+    { say: '门襟长20厘米', when: 'whole', does: 'pattern.updateDraft' },
+    { say: '经向缩水3 纬向缩水1.5', when: 'whole', does: 'pattern.updateDraft' },
+    { say: '交付检查', when: 'whole', does: 'reply' },
+  ] },
   { group: '改 ET 裤子文件（先在“自动改裤长”里设好规则）', items: [
     { say: '裤长加2厘米', when: 'etPants', does: 'pattern.extendPantsHem' },
     { say: '裤长减1.5厘米', when: 'etPants', does: 'pattern.extendPantsHem' },
@@ -61,6 +69,8 @@ export const PHRASES = Object.freeze([
     { say: '把裁片排整齐', when: 'drafted', does: 'piece.arrange' },
   ] },
   { group: '放码', items: [
+    { say: '整套放码：号型 S M L XL，基码 M', when: 'whole', does: 'pattern.updateDraft' },
+    { say: '腰围档差 4', when: 'whole', does: 'pattern.updateDraft' },
     { say: '放码：号型 S M L XL，基码 M', when: 'drafted', does: 'grade.setSizes' },
   ] },
   { group: '文件和画面', items: [

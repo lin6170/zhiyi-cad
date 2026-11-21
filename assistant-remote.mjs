@@ -22,6 +22,21 @@ function said(raw) {
   try { const body = JSON.parse(raw); return typeof body?.error === 'string' ? [...body.error].filter(c => c.codePointAt(0) >= 32).join('').trim().slice(0, 300) : ''; } catch { return ''; }
 }
 const REQUEST_OPTIONS = { credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' };
+/**
+ * The body of a response, read while the timer of its request still runs: a service that sends its headers and then stalls
+ * must not keep the page waiting (up to v74 the timer stopped with the headers). Rejects when the request's signal aborts,
+ * whether or not the fetch in use ties its body to the signal.
+ */
+function readBody(response, signal) {
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(new Error('aborted'));
+    if (signal.aborted) return stop();
+    signal.addEventListener('abort', stop, { once: true });
+    Promise.resolve().then(() => response.text()).then(
+      text => { signal.removeEventListener('abort', stop); resolve(text); },
+      error => { signal.removeEventListener('abort', stop); reject(error); });
+  });
+}
 
 /** A service address the page may call: https, or http on this computer only. Returns the normalised base address. */
 export function checkServiceUrl(value) {
@@ -41,14 +56,15 @@ export function createRemotePlanner({ getSettings, fetchImpl = (...args) => glob
     const base = checkServiceUrl(settings.serviceUrl), controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     const body = JSON.stringify({ schema: REQUEST_SCHEMA, locale: 'zh-CN', units: 'mm', instruction: text, history: history || [], scene, selection: context?.selection || { entityIds: [], pieceIds: [] },
       last: context?.last || { entityIds: [], pieceIds: [] }, preferences: context?.preferences || {}, commands: catalog.commands, actions: actions || [], feedback: feedback || null });
-    let response;
+    let response, raw;
     try {
       response = await fetchImpl(base + '/v1/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(settings.accessCode ? { Authorization: 'Bearer ' + settings.accessCode } : {}) }, body,
         signal: controller.signal, ...REQUEST_OPTIONS });
+      try { raw = await readBody(response, controller.signal); } catch (error) { if (controller.signal.aborted) throw error; raw = ''; }
     } catch (error) {
-      throw new Error(controller.signal.aborted ? '模型服务在 ' + Math.round(timeoutMs / 1000) + ' 秒内没有回应。' : '连不上模型服务，请检查地址和网络。');
+      const seconds = Math.round(timeoutMs / 1000);
+      throw new Error(!controller.signal.aborted ? '连不上模型服务，请检查地址和网络。' : response ? '模型服务在 ' + seconds + ' 秒内没有把回应传完。' : '模型服务在 ' + seconds + ' 秒内没有回应。');
     } finally { clearTimeout(timer); }
-    let raw; try { raw = await response.text(); } catch { raw = ''; }
     if (!response.ok) {
       const reason = said(raw);
       if (response.status === 401) throw new Error('模型服务拒绝了访问，请检查访问码。');
@@ -65,11 +81,15 @@ export function createRemotePlanner({ getSettings, fetchImpl = (...args) => glob
 /** Ask a service whether it is there and which model it uses. Resolves to { provider, model, demo }; throws with a reason. */
 export async function checkService({ serviceUrl, accessCode = '' }, { fetchImpl = (...args) => globalThis.fetch(...args), timeoutMs = 10000 } = {}) {
   const base = checkServiceUrl(serviceUrl), controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
-  try { response = await fetchImpl(base + '/v1/health', { method: 'GET', headers: accessCode ? { Authorization: 'Bearer ' + accessCode } : {}, signal: controller.signal, ...REQUEST_OPTIONS }); }
-  catch { throw new Error(controller.signal.aborted ? '这个地址在 ' + Math.round(timeoutMs / 1000) + ' 秒内没有回应。' : '连不上这个地址。请确认服务已经启动、地址没有写错；浏览器询问是否允许访问本机网络时，请选“允许”。'); }
-  finally { clearTimeout(timer); }
-  let raw; try { raw = await response.text(); } catch { raw = ''; }
+  let response, raw;
+  try {
+    response = await fetchImpl(base + '/v1/health', { method: 'GET', headers: accessCode ? { Authorization: 'Bearer ' + accessCode } : {}, signal: controller.signal, ...REQUEST_OPTIONS });
+    try { raw = await readBody(response, controller.signal); } catch (error) { if (controller.signal.aborted) throw error; raw = ''; }
+  } catch {
+    const seconds = Math.round(timeoutMs / 1000);
+    throw new Error(!controller.signal.aborted ? '连不上这个地址。请确认服务已经启动、地址没有写错；浏览器询问是否允许访问本机网络时，请选“允许”。'
+      : response ? '这个地址在 ' + seconds + ' 秒内没有把回应传完。' : '这个地址在 ' + seconds + ' 秒内没有回应。');
+  } finally { clearTimeout(timer); }
   if (response.status === 401) throw new Error('访问码不对。');
   if (!response.ok) throw new Error(said(raw) || '这个地址有回应，但不是可用的模型服务（HTTP ' + response.status + '）。');
   let body = null; try { body = JSON.parse(raw); } catch { /* not a service of this kind */ }

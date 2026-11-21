@@ -14,7 +14,8 @@ import { applyAllowance, syncAllowances, SHARP_CORNER_LIMIT } from './seams.mjs'
 import { applyNotches } from './notches.mjs';
 import { seamEdgeDefinitions, edgeKey, edgeWidthMap } from './seam-widths.mjs';
 import { PAIR_KINDS } from './seam-corners.mjs';
-import { draftStraightPants, draftFields, validateDraftInput, DRAFT_COMMAND, DRAFT_SCHEMA } from './pants-draft.mjs';
+import { draftStraightPants, draftFields, partFields, defaultParts, defaultGrading, GRADE_FIELDS, gradingDigest, validateDraftInput, DRAFT_COMMAND, DRAFT_SCHEMA } from './pants-draft.mjs';
+import { pantsDeliveryChecks } from './pants-set.mjs';
 import { PANTS_COMMAND } from './pants-command.mjs';
 import { transform } from './geometry.mjs';
 import { LIMIT, number, point, idList, text, object, layer, validateInput, requireMm, samePoint, entityOf, groupOf, addEntity, assertWholePieces, existingIds, round } from './cad-command-kit.mjs';
@@ -92,7 +93,10 @@ function seamOf(project, group) {
 function draftUntouched(project, record, baseline) {
   if (record.groupIds.length !== baseline.groups.length) return false;
   const byId = new Map(project.entities.map(e => [e.id, e])), baseById = new Map(baseline.entities.map(e => [e.id, e]));
-  const own = (map, group) => group.entityIds.map(id => map.get(id)).filter(e => e && !e.derivedFrom);
+  const own = (map, group) => group.entityIds.map(id => map.get(id)).filter(e => e && !e.derivedFrom && !e.notchFrom);
+  // v76: the notches the whole trouser makes are compared by where they stand on their lines
+  const notchesNow = (record.notchIds || []).map(id => (project.notches || []).find(n => n.id === id)), notchesWas = baseline.notches || [];
+  if (notchesNow.length !== notchesWas.length || notchesNow.some((n, i) => !n || n.mode !== notchesWas[i].mode || Math.abs(n.position - notchesWas[i].position) > 1e-6 || n.count !== notchesWas[i].count || n.depth !== notchesWas[i].depth)) return false;
   for (let g = 0; g < baseline.groups.length; g++) {
     const group = (project.groups || []).find(x => x.id === record.groupIds[g]), base = baseline.groups[g];
     if (!group || group.name !== base.name || group.entityIds.some(id => !byId.has(id))) return false;
@@ -117,28 +121,45 @@ function updateDraft(project, p, env) {
   requireMm(project);
   const record = draftRecord(project, p.draftId), oldGroups = record.groupIds.map(id => (project.groups || []).find(g => g.id === id));
   if (oldGroups.some(g => !g)) throw new Error('这套尺寸纸样的裁片已被删除或拆散，不能按尺寸重算。');
-  let serial = 0; const baseline = draftStraightPants(record.input, { makeId: () => 'base-' + (++serial) }).project;
+  let serial = 0; const baseline = draftStraightPants(record.input, { makeId: () => 'base-' + (++serial), deriveGrading: false }).project;
   if (!p.discardManualEdits && !draftUntouched(project, record, baseline)) throw Object.assign(new Error('这套纸样生成后被手工修改过。按尺寸重算会丢弃这些修改；确认要丢弃时请明确说明。'), { code: 'draft-edited' });
+  // v77: the draft's grading plan as it was made: a plan changed or deleted in the grading panel (a rule, the size table, alignment,
+  // locks) is a hand edit too, since a recompute derives the plan again from the formulas
+  if (!p.discardManualEdits && record.gradingPlanId) { const own = (project.gradingPlans || []).find(plan => plan.id === record.gradingPlanId); if (!own || (record.gradingDigest && gradingDigest(own) !== record.gradingDigest)) throw Object.assign(new Error('这套纸样的放码生成后在放码面板里改过或删过（规则、尺寸表、对齐或锁定）。按尺寸重算会按公式重新推出放码，丢弃这些修改；确认要丢弃时请明确说明。'), { code: 'draft-edited' }); }
   const oldIds = new Set([...record.entityIds, ...oldGroups.flatMap(g => g.entityIds)]);
   for (const recipe of project.seamAllowances || []) if (recipe.baseEntityIds.some(id => oldIds.has(id))) for (const id of recipe.outputIds) oldIds.add(id);
-  const linked = JSON.stringify([project.notches || [], project.seamChecks || [], project.gradingPlans || [], project.markerPlans || [], project.plotSettings || null]);
+  const ownNotches = new Set(record.notchIds || []), linked = JSON.stringify([(project.notches || []).filter(n => !ownNotches.has(n.id)), project.seamChecks || [], (project.gradingPlans || []).filter(plan => plan.id !== record.gradingPlanId), project.markerPlans || [], project.plotSettings || null]);
   if ([...oldIds, ...record.groupIds].some(id => linked.includes(JSON.stringify(id)))) throw new Error('这套纸样已有刀口、对缝、放码、排料或出图关联，不能自动按尺寸重算。');
-  const input = { measurements: { ...record.input.measurements, ...(p.measurements || {}) }, rules: { ...record.input.rules, ...(p.rules || {}) } };
+  // v76: a draft with parts keeps them; parts given for a draft of the front and back alone make it a whole trouser, the parts not named taking their example values
+  const parts = record.input.parts || p.parts ? { ...(record.input.parts || defaultParts()), ...(p.parts || {}) } : null;
+  // v77: the grading stays with the draft, its sizes, base and steps change, or it goes (removeGrading); a draft without it gets the examples for what is not given
+  if (p.grading && p.removeGrading) throw new Error('不能同时给出放码设置和去掉放码。');
+  const oldGrading = record.input.grading || null, grading = p.removeGrading ? null : oldGrading || p.grading ? { ...(oldGrading || defaultGrading()), ...(p.grading || {}), steps: { ...(oldGrading || defaultGrading()).steps, ...(p.grading?.steps || {}) } } : null;
+  if (p.removeGrading && !oldGrading) throw new Error('这套纸样没有放码。');
+  if (grading && !parts) throw new Error('整套放码只用于带部件的整套裤子；只有前后片的一套请先给出 parts 变成整套。');
+  const input = { measurements: { ...record.input.measurements, ...(p.measurements || {}) }, rules: { ...record.input.rules, ...(p.rules || {}) }, ...(parts ? { parts } : {}), ...(grading ? { grading } : {}) };
   const changed = [];
   for (const type of ['measurements', 'rules']) for (const [key, label] of draftFields[type]) if (input[type][key] !== record.input[type][key]) changed.push({ field: key, name: label, before: record.input[type][key], after: input[type][key] });
+  if (parts && !record.input.parts) changed.push({ field: 'parts', name: '整套部件（腰头、门襟、里襟、口袋、裤袢）', before: null, after: parts });
+  else if (parts) for (const [key, label] of partFields) if (parts[key] !== record.input.parts[key]) changed.push({ field: key, name: label, before: record.input.parts[key], after: parts[key] });
+  if (JSON.stringify(grading) !== JSON.stringify(oldGrading)) changed.push({ field: 'grading', name: '放码', before: oldGrading, after: grading });
   if (!changed.length && !p.discardManualEdits) throw new Error('尺寸和规则没有变化。');
   validateDraftInput(input);
   const generated = draftStraightPants(input, { makeId: env.makeId }), entitiesOf = (source, group) => source.entities.filter(e => group.entityIds.includes(e.id));
   // Each regenerated piece keeps the top-left corner of the net outline it replaces.
   // Pieces that stood side by side keep the gap between them, so a wider piece does not run into its neighbour.
-  let previousOld = null, previousNew = null;
+  // v76: when the set of pieces changes, a piece takes the place of the old piece of its name; a new piece moves with the first one
+  let previousOld = null, previousNew = null, firstShift = null;
+  const sameSet = oldGroups.length === generated.project.groups.length && oldGroups.every((g, i) => g.name === generated.project.groups[i].name), oldByName = new Map(oldGroups.map(g => [g.name, g]));
   generated.project.groups.forEach((group, index) => {
-    const oldMembers = entitiesOf(project, oldGroups[index]), members = entitiesOf(generated.project, group);
+    const old = sameSet ? oldGroups[index] : oldByName.get(group.name), members = entitiesOf(generated.project, group);
+    if (!old) { const shift = firstShift || { dx: 0, dy: 0 }; for (const entity of members) transform(entity, q => ({ x: q.x + shift.dx, y: q.y + shift.dy })); return; }
+    const oldMembers = entitiesOf(project, old);
     const before = outlineBox(oldMembers, false), after = outlineBox(members, false), oldFull = outlineBox(oldMembers, true), full = outlineBox(members, true);
     let dx = before.minX - after.minX; const dy = before.maxY - after.maxY;
     if (previousOld && oldFull.minX >= previousOld.maxX) dx = previousNew.maxX + (oldFull.minX - previousOld.maxX) - full.minX;
     for (const entity of members) transform(entity, q => ({ x: q.x + dx, y: q.y + dy }));
-    previousOld = oldFull; previousNew = outlineBox(members, true);
+    previousOld = oldFull; previousNew = outlineBox(members, true); firstShift ??= { dx, dy };
   });
   // The new lines and pieces take the place of the old ones in the drawing order and in the piece list.
   const entityAt = project.entities.findIndex(e => oldIds.has(e.id)), groupAt = project.groups.findIndex(g => record.groupIds.includes(g.id));
@@ -147,10 +168,28 @@ function updateDraft(project, p, env) {
   const groupsBefore = project.groups.slice(0, groupAt), groupsAfter = project.groups.slice(groupAt).filter(g => !record.groupIds.includes(g.id));
   project.groups = [...groupsBefore, ...generated.project.groups, ...groupsAfter];
   project.seamAllowances = (project.seamAllowances || []).filter(r => !r.baseEntityIds.some(id => oldIds.has(id))).concat(generated.project.seamAllowances);
+  if (ownNotches.size || generated.project.notches?.length) project.notches = (project.notches || []).filter(n => !ownNotches.has(n.id)).concat(generated.project.notches || []);
+  // v77: the draft's plan is made again from the new drafting (its rules follow the new formulas); a drawing has one table plan
+  const plans = (project.gradingPlans || []).filter(plan => plan.id !== record.gradingPlanId);
+  if (generated.gradingPlan) {
+    if (plans.some(plan => plan.method === 'table')) throw new Error('这张图已经有别的按尺寸表放码的方案（一张图只有一套号型和尺寸表），不能再给这套纸样放码。');
+    const id = record.gradingPlanId || env.makeId(); plans.push({ id, ...generated.gradingPlan }); record.gradingPlanId = id; record.gradingDigest = gradingDigest(generated.gradingPlan); project.version = Math.max(project.version, 8);
+  } else { delete record.gradingPlanId; delete record.gradingDigest; }
+  project.gradingPlans = plans;
   Object.assign(record, { input: generated.input, report: generated.report, entityIds: generated.project.entities.map(e => e.id), groupIds: generated.project.groups.map(g => g.id) });
+  if (generated.project.notches?.length) record.notchIds = generated.project.notches.map(n => n.id); else delete record.notchIds;
   return { summary: { operation: 'pattern.updateDraft', draftId: record.id, changed, report: generated.report }, measurements: generated.report.checks, created: record.id };
 }
-const draftSchema = partial => object(Object.fromEntries(['measurements', 'rules'].map(type => [type, object(Object.fromEntries(draftFields[type].map(([key, label, example, min, max, hint, unit]) => [key, number(min, max, label + '，' + (unit === 'percent' ? '百分比' : '毫米') + '。' + hint + '。示例值 ' + example)])), partial ? [] : draftFields[type].map(f => f[0]), type === 'measurements' ? '人体与长度尺寸，毫米' : '松量、成衣规格和制版系数')])), partial ? [] : ['measurements', 'rules']);
+const partsSchema = partial => object(Object.fromEntries(partFields.map(([key, label, example, min, max, hint, unit]) => [key, unit === 'choice' || unit === 'count' ? { type: 'integer', minimum: min, maximum: max, description: label + '。' + hint + '。示例值 ' + example } : number(min, max, label + '，' + (unit === 'percent' ? '百分比' : '毫米') + '。' + hint + '。示例值 ' + example)])), partial ? [] : partFields.map(f => f[0]), '整套裤子的部件和它们的尺寸：腰头、门襟和里襟、斜插袋、后袋、裤袢。新生成（pattern.draftStraightPants）时给了就要给全部字段；重算（pattern.updateDraft）时只给要改的字段');
+/** The delivery checks of a whole trouser on the drawing as it is now: name, result and, where measured, the value and what it should be. */
+function deliveryOf(project, record) {
+  try { return pantsDeliveryChecks(project, record.report.roles, record.report.params).map(c => ({ name: c.name, status: c.status, ...(c.value !== undefined ? { value: round(c.value), target: round(c.target), unit: c.unit } : {}), ...(c.status !== 'ok' && c.note ? { note: c.note } : {}) })); }
+  catch (error) { return [{ name: '交付检查', status: 'fail', note: error.message }]; }
+}
+const gradingSchema = partial => object({ sizes: { type: 'array', minItems: 2, maxItems: 13, items: text(20, '号型名称'), description: '全部号型，从小到大，含基码，如 ["S","M","L","XL"]' }, base: text(20, '基码，必须是 sizes 里的一个'),
+  steps: object(Object.fromEntries(GRADE_FIELDS.map(([key, , row, , example, label]) => [key, number(-200, 200, label + '的档差：每大一个码增加多少，毫米（尺寸表里叫“' + row + '”）。示例值 ' + example)])), [], '各项的档差，毫米；不给的项各码相同') },
+  partial ? [] : ['sizes', 'base', 'steps'], '整套放码：号型、基码和各项档差。按纸样自己的公式推出每个点的放码规则（ET 的尺寸表放码），各码和直接按该码尺寸制版一致');
+const draftSchema = partial => { const schema = object(Object.fromEntries(['measurements', 'rules'].map(type => [type, object(Object.fromEntries(draftFields[type].map(([key, label, example, min, max, hint, unit]) => [key, number(min, max, label + '，' + (unit === 'percent' ? '百分比' : '毫米') + '。' + hint + '。示例值 ' + example)])), partial ? [] : draftFields[type].map(f => f[0]), type === 'measurements' ? '人体与长度尺寸，毫米' : '松量、成衣规格和制版系数')])), partial ? [] : ['measurements', 'rules']); schema.properties.parts = partsSchema(partial); schema.properties.grading = gradingSchema(partial); return schema; };
 
 // ---------------------------------------------------------------- the command set
 export const commandSet = [
@@ -484,10 +523,10 @@ export const commandSet = [
   ...buildCommands,
   ...curveCommands,
   ...seamToolCommands,
-  { type: DRAFT_COMMAND, title: '按尺寸生成直筒裤', description: '输入人体尺寸和制版规则，从零生成成人基础直筒裤的前后裤片、省、布纹线、定位线和缝份。全部尺寸为毫米。公式是演示规则，未经试衣确认。每个字段都要给：师傅没有说的尺寸和规则，用该字段说明里的示例值，并在 assumptions 里写明哪几项用了示例值、请师傅核对。measurements 里的围度是人体净尺寸；师傅给的是成衣尺寸时，人体围度 = 成衣围度 − 对应的松量（腰围对 waistEase，臀围对 hipEase）。膝围和脚口都是单腿一整圈：师傅只说“脚口”或“膝围”多少、没说是平量还是一圈的，按一圈理解；只说了其中一个的，直筒裤的另一个取相同的值。这两条用到了都写进 assumptions。',
+  { type: DRAFT_COMMAND, title: '按尺寸生成直筒裤', description: '输入人体尺寸和制版规则，从零生成成人基础直筒裤。给了 parts 时生成整套：前后裤片（省、刀口、打孔、脚口反转角）、腰头（刀口、扣眼、扣位）、门襟、里襟、斜插袋（袋垫布、袋布前后层）、后袋（嵌线、垫布、袋布）和裤袢，每片带布料、片数、属性文字、布纹线和缝份；不给 parts 只生成前后裤片、省、布纹线、定位线和缝份。师傅没有说只要前后片时，给 parts，没说的部件和尺寸用示例值，并在 assumptions 里写明。给了 grading（号型、基码、各项档差；只能和 parts 一起给）时同时整套放码：按纸样自己的公式推出每个点和刀口的放码规则（ET 的尺寸表放码），写进 ET 文件后在 ET 里推板展开得到各码；打孔、扣位和文字不放码。师傅说放码但没给档差时，用 grading.steps 说明里的示例值，并在 assumptions 里写明。parts 里的 warpShrink、weftShrink 是面料的经向、纬向缩水（百分比，长度 ÷（1 − 缩水），与 ET 的缩水操作相同），只加在面料裁片上。生成后 scene.drafts 里这套纸样的 delivery 是按现在画的纸样量的交付检查（侧缝、内缝、腰头对腰口、门襟、里襟、袋口、后袋位置、各处拼合顺直、布纹线、缝份和刀口），师傅问检查结果时照它回答。全部尺寸为毫米。公式是演示规则，未经试衣确认。每个字段都要给：师傅没有说的尺寸和规则，用该字段说明里的示例值，并在 assumptions 里写明哪几项用了示例值、请师傅核对。measurements 里的围度是人体净尺寸；师傅给的是成衣尺寸时，人体围度 = 成衣围度 − 对应的松量（腰围对 waistEase，臀围对 hipEase）。膝围和脚口都是单腿一整圈：师傅只说“脚口”或“膝围”多少、没说是平量还是一圈的，按一圈理解；只说了其中一个的，直筒裤的另一个取相同的值。这两条用到了都写进 assumptions。',
     input_schema: draftSchema(false), external: true },
-  { type: 'pattern.updateDraft', title: '按新尺寸重算纸样', description: '修改已生成直筒裤的部分尺寸或规则，整套纸样在原位置重新生成。给的是新的数值，不是加减多少；现在的数值在 scene.drafts 里这套纸样的 input 中。纸样被手工改过时会拒绝，除非 discardManualEdits 为 true。只是移动、旋转过裁片不算手工修改。只改脚口不会带动膝围，反过来也一样；原来两者相同而只改了一个时，在 assumptions 里告诉师傅另一个保持原值、裤腿不再上下一样宽。',
-    input_schema: { ...draftSchema(true), properties: { ...draftSchema(true).properties, draftId: text(120, '要重算的纸样，省略时为最近生成的一套'), discardManualEdits: { type: 'boolean', description: '是否丢弃生成后的手工修改' } } },
+  { type: 'pattern.updateDraft', title: '按新尺寸重算纸样', description: '修改已生成直筒裤的部分尺寸或规则，整套纸样在原位置重新生成。给的是新的数值，不是加减多少；现在的数值在 scene.drafts 里这套纸样的 input 中。纸样被手工改过时会拒绝，除非 discardManualEdits 为 true。只是移动、旋转过裁片不算手工修改。只改脚口不会带动膝围，反过来也一样；原来两者相同而只改了一个时，在 assumptions 里告诉师傅另一个保持原值、裤腿不再上下一样宽。部件在 parts 里改，例如不要后袋 backPocket 0、双嵌线 backPocket 2、腰头宽 waistbandWidth；放码在 grading 里改（只给要改的，steps 里只给要改的项），去掉放码用 removeGrading：这套纸样自己的放码（scene.grading.fromDraft 指向它）只在这里改，用 grade.* 改算手工修改；师傅说放码但没给档差时用 grading.steps 说明里的示例值，并在 assumptions 里写明；按公式放码只用于整套裤子：只有前后片的一套要放码得先变成整套（parts 和 grading 一起给，parts 可以是 {}，部件用示例值），这会加上腰头、门襟、口袋和裤袢，师傅没说要整套时先问；只有前后片的一套给了 parts 就变成整套，没给的部件用示例值，要在 assumptions 里写明。',
+    input_schema: { ...draftSchema(true), properties: { ...draftSchema(true).properties, removeGrading: { type: 'boolean', description: '去掉这套纸样的放码（各码和尺寸表一起去掉）' }, draftId: text(120, '要重算的纸样，省略时为最近生成的一套'), discardManualEdits: { type: 'boolean', description: '是否丢弃生成后的手工修改' } } },
     run: updateDraft },
   // v73: the length of an ET pants file opened in the page: the command of 自动改裤长, run by cad-commands.mjs with the pants
   // session (the panel's rules say which pieces, knee lines and hems there are)
@@ -539,5 +578,6 @@ export function describeScene(project) {
     ...(e.type === 'text' ? { text: e.text, at: e.points[0] } : { lengthMm: round(entityLength(e)), from: e.points[0], to: e.points.at(-1), ...through(e) }) }));
   const looseMarks = markRows(project.entities.filter(e => !grouped.has(e.id))), grading = describeGrading(project);
   return { units: project.units, name: project.name, entityCount: project.entities.length, pieceCount: (project.groups || []).length, bbox: box(bounds(project.entities)), pieces, looseEntities: loose, ...(looseMarks.length ? { looseMarks } : {}), ...(grading ? { grading } : {}),
-    drafts: drafts.map(d => ({ id: d.id, schema: d.schema, input: d.input, pieceIds: d.groupIds })) };
+    // v76: a whole trouser carries its delivery checks, measured on the drawing as it is now
+    drafts: drafts.map(d => ({ id: d.id, schema: d.schema, input: d.input, pieceIds: d.groupIds, ...(d.report?.roles ? { delivery: deliveryOf(project, d) } : {}) })) };
 }

@@ -449,5 +449,5 @@ export function createGradingPanel({getProject,getSelection,commit,setTool,getTo
     if(chosen){entityId=chosen.entityId;pointIndex=chosen.index;}else if(target&&draft.sources.some(source=>source.entityId===target.entity.id)){entityId=target.entity.id;pointIndex=0;}else{notify('请点选方案内的基准线或控制点');return;}
     pointKey='';refresh();render();$('grade-deltas').scrollIntoView({block:'center'});
   }
-  reset();return {reset,refresh,draw,pick,begin:()=>{setTool('grading');refresh();$('grading-panel').scrollIntoView({block:'start'});}};
+  reset();return {reset,refresh,draw,pick,begin:planId=>{setTool('grading');refresh();if(planId&&getProject().gradingPlans?.some(plan=>plan.id===planId)&&planId!==selectedId){$('grade-show-rules').checked=false;$('grade-saved').value=planId;$('grade-saved').dispatchEvent(new Event('change'));}$('grading-panel').scrollIntoView({block:'start'});}};
 }

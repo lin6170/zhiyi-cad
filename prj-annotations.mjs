@@ -63,7 +63,8 @@ export function parsePrjAnnotations(input, { afterCurves = null } = {}) {
   function pieceRecord(offset) {
     // The byte after the colour is 0x20 on the pieces of every file seen so far, and 0xA0 on a piece ET made with its 提取裁片 tool
     // (v59: seen in files saved by ET 2017 after that tool; what the extra bit says is not known, ET keeps it when it saves again).
-    if (offset + 160 > textSection.offset || (bytes[offset + 7] & 0x7f) !== 0x20 || !zeroRange(offset + 8, 13)) return null;
+    // v76: and 0x24 on a piece ET has shrunk with 缩水操作 or given a shrinkage with 裁片自带缩水 (the note follows the grain points)
+    if (offset + 160 > textSection.offset || (bytes[offset + 7] & 0x7b) !== 0x20 || !zeroRange(offset + 8, 13)) return null;
     if (u32(offset + 21) !== 1 || u32(offset + 25) !== u32(offset + 32)) return null;
     let cursor = offset + 36;
     function string() {
@@ -93,8 +94,12 @@ export function parsePrjAnnotations(input, { afterCurves = null } = {}) {
       const positions = [0, 12, 28, 40].map(delta => ({ x: f32(cursor + delta), y: f32(cursor + delta + 4), z: f32(cursor + delta + 8) }));
       if (!positions.every(point => finite([point.x, point.y]) && point.z === 0)) return null;
       if (positions[0].x !== positions[2].x || positions[0].y !== positions[2].y) return null;
-      if (u32(cursor + 24) !== 0 || u32(cursor + 52) !== 0) return null;
-      return { offset, sourceId: u32(offset), flag: bytes[offset + 7], style, name, size, material, materialCode, symmetry, count, symmetricCount, angle, labelFormat, mode, vectorOffset: cursor, positions };
+      if (u32(cursor + 24) !== 0) return null;
+      // v76: after the second grain point ET keeps a note of the shrinkage it applied (缩水操作, 裁片自带缩水), a text with a 16-bit length, then a zero word
+      const noteLength = u16(cursor + 52);
+      if (noteLength > 200 || cursor + 58 + noteLength > bytes.length || u32(cursor + 54 + noteLength) !== 0) return null;
+      const shrinkNote = noteLength ? decoder.decode(bytes.subarray(cursor + 54, cursor + 54 + noteLength)) : '';
+      return { offset, sourceId: u32(offset), flag: bytes[offset + 7], style, name, size, material, materialCode, symmetry, count, symmetricCount, angle, labelFormat, mode, vectorOffset: cursor, positions, noteLength, shrinkNote };
     } catch { return null; }
   }
   const pieces = [];
@@ -107,14 +112,14 @@ export function parsePrjAnnotations(input, { afterCurves = null } = {}) {
   }
   /** Where a piece record ends: its outline chains, five reference lists and a fixed block follow the grain line. */
   function pieceEnd(piece) {
-    let cursor = piece.vectorOffset + 58;
+    let cursor = piece.vectorOffset + 58 + piece.noteLength;
     const list = () => { if (cursor + 4 > bytes.length) throw new Error('truncated'); const count = u32(cursor); if (count > 100000) throw new Error('count'); cursor += 4 + count * 4; };
     try {
       if (cursor + 4 > bytes.length) return null;
       const chains = u32(cursor); cursor += 4; if (chains < 1 || chains > 1000) return null;
       for (let index = 0; index < chains; index++) { cursor += 2; list(); cursor += 4; }
       for (let index = 0; index < 5; index++) list();
-      cursor += 112;
+      cursor += 112 + (bytes[piece.offset + 7] & 0x04 ? 8 : 0);   // v76: a shrunk piece ends with its two stretch factors
       return cursor <= bytes.length ? cursor : null;
     } catch { return null; }
   }

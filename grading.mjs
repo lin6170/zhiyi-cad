@@ -150,7 +150,7 @@ export function generateGradedSize(project,value,sizeId){
     const byId=new Map(result.entities.map(entity=>[entity.id,entity]));
     for(const group of result.groups)for(const contour of contoursForGroup(group)){
       const edges=contour.entityIds.map(id=>byId.get(id));if(edges.length<2||edges.some(edge=>!edge))continue;
-      try{const healed=closeContourGaps(edges,GRADED_JOINT_LIMIT);if(healed.count&&healed.largest>.05)result.warnings.push('裁片“'+group.name+'”有 '+healed.count+' 处相邻的线端在这个码里对不上（最大 '+healed.largest.toFixed(2)+' mm），已合拢；请核对这几个点的放码规则。');}
+      try{const healed=closeContourGaps(edges,GRADED_JOINT_LIMIT);if(healed.count&&healed.largest>.05)result.warnings.push('裁片“'+group.name+'”有 '+healed.count+' 处相邻的线端在这个码里对不上（最大 '+healed.largest.toFixed(2)+' mm），已合拢（ET 推板展开会在这里留一条缝）；请核对这几个点的放码规则。');}
       catch(error){result.warnings.push('裁片“'+group.name+'”：'+error.message);}
     }
     // A notch with a rule of its own moves by its formulas and is put back on its edge, as ET does: its place along the edge

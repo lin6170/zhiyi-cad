@@ -1,6 +1,6 @@
 import { distance } from './geometry.mjs';
 import { exactLineContact } from './native-contact.mjs';
-import { inspectNativeChain } from './contour-inspection.mjs';
+import { inspectNativeChain, MICRO_GAP_MM } from './contour-inspection.mjs';
 
 export function contoursForGroup(group) {
   if (Array.isArray(group.contours)) return group.contours;
@@ -50,8 +50,17 @@ export function inspectChain(entities, tolerance) {
   if (!entities.length || entities.some(entity => entity.type === 'text')) throw new Error('轮廓必须包含线条');
   const oriented = orientChain(entities), gaps = [], segments = [], issues = [];
   if (entities.length > 1 && entities.some(entity => entity.closed)) issues.push({ kind: 'mixed-closed', message: '多曲线链中含独立闭合图元，需核对边界定义' });
+  // v77: where a straight line starts a ten-thousandth of a millimetre or less from the end of the edge before it, the two are one
+  // point for the crossing test below (a size made by grading rules can leave its corners 1e-14 mm apart, and an exact test then sees
+  // the lines overlap by that much); copies only, the gaps are still measured from the drawing
+  const endOf = ({ entity, reversed, points }) => { const controls = entity.curve?.controlPoints; return controls ? (reversed ? controls[0] : controls.at(-1)) : points.at(-1); };
+  const linePoints = oriented.map(({ entity, points }, i) => {
+    if (entity.curve || oriented.length < 2 || (oriented.length === 1 && entity.closed)) return points;
+    const before = endOf(oriented[(i - 1 + oriented.length) % oriented.length]), gap = distance(before, points[0]);
+    return gap > 0 && gap <= MICRO_GAP_MM ? [{ ...before }, ...points.slice(1)] : points;
+  });
   for (let i = 0; i < oriented.length; i++) {
-    const { entity, points } = oriented[i];
+    const { entity } = oriented[i], points = linePoints[i];
     const next = oriented[(i + 1) % oriented.length];
     if (!(oriented.length === 1 && entity.closed)) {
       const controls=entity.curve?.controlPoints,nextControls=next.entity.curve?.controlPoints,start=controls?(oriented[i].reversed?controls[0]:controls.at(-1)):points.at(-1),end=nextControls?(next.reversed?nextControls.at(-1):nextControls[0]):next.points[0],gap=distance(start,end);

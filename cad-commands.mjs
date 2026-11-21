@@ -30,7 +30,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     {type:'selection.translate',parameters:['entityIds: string[]','dx: number','dy: number','units: mm | source']},
     {type:'line.moveEndpoint',parameters:['entityId: string','endpoint: 0 | 1','point: Point','units: mm | source']},
     {type:PANTS_COMMAND,parameters:['deltaMm: -100..100, nonzero, 0.1 mm'],requires:'verified private template profile'},
-    {type:DRAFT_COMMAND,parameters:['measurements: body dimensions in mm','rules: demonstration formula parameters'],requires:'empty canvas or millimetre project; no PRJ template'},
+    {type:DRAFT_COMMAND,parameters:['measurements: body dimensions in mm','rules: demonstration formula parameters','parts: optional; waistband, fly, pockets and belt loops of a whole trouser'],requires:'empty canvas or millimetre project; no PRJ template'},
     {type:'history.undo',parameters:[]},{type:'history.redo',parameters:[]},
     ...commandSet.filter(c=>c.type!==DRAFT_COMMAND&&c.type!==PANTS_COMMAND).map(c=>({type:c.type,title:c.title,parameters:'catalog()'}))
   ],catalog:COMMAND_SET_VERSION,contract:'preview({schema,type,expectedRevision,parameters}) or previewBatch({schema,expectedRevision,steps}) → apply(planId); failure leaves project/history unchanged'};}
@@ -41,7 +41,7 @@ export function createCadCommands({getProject,getRevision,canExecute,commit,undo
     const units=()=>{if(p.units!==(before.units==='mm'?'mm':'source'))throw Error('命令单位与工程不一致。');};
     const extra=findCommand(type);
     if(type===DRAFT_COMMAND){
-      keys(p,['measurements','rules']);const result=appendPantsDraft(before,p,makeId);next=result.project;summary=result.summary;measurements=result.measurements;created=next.metadata.parametricDrafts.at(-1).id;
+      keys(p,['measurements','rules','parts','grading']);const result=appendPantsDraft(before,p,makeId);next=result.project;summary=result.summary;measurements=result.measurements;created=next.metadata.parametricDrafts.at(-1).id;
     }else if(type===PANTS_COMMAND){
       keys(p,['deltaMm']);validatePantsDelta(p.deltaMm);const session=getPantsSession();if(!session)throw Error('请先加载并核对本母版的改版规则。');
       const result=session.plan(before,p);next=result.project;summary=result.summary;measurements=result.measurements;

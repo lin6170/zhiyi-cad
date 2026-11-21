@@ -7,6 +7,7 @@ import { LIMIT, number, point, text, idList, object, requireMm, entityOf, groupO
 import { moveSelection, rotateSelection } from './selection.mjs';
 import { pieceExtent, pieceOutline } from './piece-info.mjs';
 import { attributesOf, materialTable, labelText, refreshPieceLabel } from './piece-attributes.mjs';
+import { applyShrink, shrinkOf } from './shrink.mjs';
 
 function grainOf(project, group) { const ids = new Set(group.entityIds), grain = project.entities.find(e => ids.has(e.id) && e.layer === 'grain' && e.type !== 'text' && !e.curve && e.points.length === 2); if (!grain) throw new Error('裁片“' + group.name + '”没有布纹线。'); return grain; }
 const EDGES = { left: '左边', right: '右边', top: '上边', bottom: '下边', centerX: '左右居中', centerY: '上下居中' };
@@ -88,6 +89,21 @@ export const manageCommands = [
       group.attributes = { ...(group.attributes || {}), ...next, ...(p.material !== undefined ? { materialCode: table.get(p.material) } : before.materialCode === null ? {} : { materialCode: before.materialCode }) };
       refreshPieceLabel(project, group);
       return { summary: { operation: 'piece.setAttributes', groupId: group.id, name: group.name, ...next, before: { material: before.material, count: before.count, symmetric: before.symmetric } } };
+    } },
+  { type: 'piece.shrink', title: '缩水', description: '按 ET 的缩水操作（纱向缩水）给裁片加缩水：沿布纹线方向的长度变成 原长 ÷ (1 − 经向缩水%)，垂直布纹线方向变成 原长 ÷ (1 − 纬向缩水%)，以裁片沿布纹和横布纹的中间为中心；缝份宽度不变，刀口跟着线走，扣位、扣眼、打孔和文字只移动位置、不变大小。已经加过缩水的裁片先去掉原来的缩水再加新的，两项都给 0 就是去掉缩水。保存为 ET 文件时写上 ET 的缩水记录“经:x%，纬:y%”。没有布纹线的裁片按竖直布纹处理。按尺寸生成的整套裤子请用 pattern.updateDraft 的 parts.warpShrink、parts.weftShrink 改缩水。',
+    input_schema: object({ groupIds: { type: 'array', description: '裁片', minItems: 1, maxItems: 200, items: text(120, '裁片') }, warp: number(0, 30, '经向缩水，百分比，沿布纹线方向'), weft: number(0, 30, '纬向缩水，百分比，垂直布纹线方向') }, ['groupIds', 'warp', 'weft']),
+    run(project, p) {
+      requireMm(project);
+      if (new Set(p.groupIds).size !== p.groupIds.length) throw new Error('裁片列表有重复。');
+      const changed = [];
+      for (const id of p.groupIds) {
+        const group = groupOf(project, id), now = shrinkOf(group);
+        if (group.locked) throw new Error('裁片“' + group.name + '”已锁定，先解锁再加缩水。');
+        if ((now?.warp || 0) === p.warp && (now?.weft || 0) === p.weft && (now?.axes ?? 'grain') === 'grain') continue;
+        changed.push(applyShrink(project, group, { warp: p.warp, weft: p.weft }));
+      }
+      if (!changed.length) throw new Error(p.warp || p.weft ? '这些裁片已经是这个缩水。' : '这些裁片没有缩水。');
+      return { summary: { operation: 'piece.shrink', warp: p.warp, weft: p.weft, pieces: changed.map(c => ({ name: c.name, alongMm: round(c.before.along) + ' → ' + round(c.after.along), acrossMm: round(c.before.across) + ' → ' + round(c.after.across), ...(c.replaced ? { replaced: c.replaced } : {}) })) } };
     } },
   { type: 'piece.label', title: '属性文字', description: '在裁片上写一行属性文字：裁片名称、布料和片数，例如“后袋 面料 × 2”。之后改名称、布料或片数，这行文字会跟着更新。裁片已经有属性文字时，用这条命令改它的字高或位置。at 是文字左下角的位置，不给时放在裁片中间、布纹线的右边；height 是字高，默认 8 毫米。',
     input_schema: object({ groupId: text(120, '裁片'), height: { type: 'number', exclusiveMinimum: 0, maximum: 1000, description: '字高，毫米' }, at: point('文字左下角') }, ['groupId']),

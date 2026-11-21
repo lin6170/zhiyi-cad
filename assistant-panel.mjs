@@ -22,8 +22,10 @@ function stepDetail(step) {
   if (s.lengthMm !== undefined) return '长 ' + cm(s.lengthMm) + ' cm';
   if (step.type === 'piece.create') return '轮廓 ' + s.contourEdges + ' 条线，自动加布纹线';
   if (step.type === 'seam.apply') return '缝份 ' + s.widthsMm.map(cm).join(' / ') + ' cm';
-  if (step.type === 'pattern.updateDraft') return s.changed.length ? s.changed.map(c => c.name + ' ' + (c.field.endsWith('Share') ? c.before + '% → ' + c.after + '%' : cm(c.before) + ' → ' + cm(c.after) + ' cm')).join('，') : '按记录的尺寸重新生成';
-  if (step.type === 'pattern.draftStraightPants') return '前裤片、后裤片，含省、定位线、布纹线和缝份';
+  // v76: the parts of a whole trouser are switched (腰头 生成 / 不要) or counted (裤袢 6 个)
+  const CHOICE = { waistband: ['不要', '生成'], fly: ['不要', '生成'], sidePocket: ['不要', '斜插袋'], backPocket: ['不要', '单嵌线', '双嵌线'] };
+  if (step.type === 'pattern.updateDraft') return s.changed.length ? s.changed.map(c => c.field === 'parts' ? '改成整套（腰头、门襟、里襟、口袋、裤袢）' : CHOICE[c.field] ? c.name + ' ' + CHOICE[c.field][c.before] + ' → ' + CHOICE[c.field][c.after] : c.field === 'beltLoops' ? c.name + ' ' + c.before + ' → ' + c.after + ' 个' : c.name + ' ' + (c.field.endsWith('Share') ? c.before + '% → ' + c.after + '%' : cm(c.before) + ' → ' + cm(c.after) + ' cm')).join('，') : '按记录的尺寸重新生成';
+  if (step.type === 'pattern.draftStraightPants') return s.newPieces > 2 ? '整套 ' + s.newPieces + ' 片：前后裤片、腰头、门襟、里襟、口袋和裤袢等，含刀口、打孔、布纹线和缝份' : '前裤片、后裤片，含省、定位线、布纹线和缝份';
   if (step.type === 'piece.move' || step.type === 'selection.move') return (s.dx ? '向' + (s.dx > 0 ? '右 ' : '左 ') + cm(Math.abs(s.dx)) + ' cm ' : '') + (s.dy ? '向' + (s.dy > 0 ? '上 ' : '下 ') + cm(Math.abs(s.dy)) + ' cm' : '');
   if (s.degrees !== undefined) return (s.degrees < 0 ? '顺时针 ' : '逆时针 ') + Math.abs(s.degrees) + ' 度';
   if (step.type === 'grade.setSizes') return '号型 ' + s.sizes.map(name => name === s.baseSize ? name + '（基码）' : name).join('、');
